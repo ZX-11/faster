@@ -1,0 +1,115 @@
+{
+  "devices": [
+    {
+      "type": "switch",
+      "name": "switch1",
+      "pdelay": 10,
+      "links": [
+        { "to": "switch2", "ldelay": 5, "speed": 1000 },
+        { "to": "switch3", "ldelay": 5, "speed": 1000 },
+        { "to": "device1", "ldelay": 5, "speed": 1000 }
+      ]
+    },
+    {
+      "type": "switch",
+      "name": "switch2",
+      "speed": 1000,
+      "pdelay": 10,
+      "links": [
+        { "to": "switch1", "ldelay": 5, "speed": 1000 },
+        { "to": "device2", "ldelay": 5, "speed": 1000 }
+      ]
+    },
+    {
+      "type": "switch",
+      "name": "switch3",
+      "speed": 1000,
+      "pdelay": 10,
+      "links": [
+        { "to": "switch1", "ldelay": 5, "speed": 1000 },
+        { "to": "device3", "ldelay": 5, "speed": 1000 }
+      ]
+    },
+    {
+      "type": "end",
+      "name": "device1",
+      "speed": 1000,
+      "pdelay": 10,
+      "links": [
+        { "to": "switch1", "ldelay": 5, "speed": 1000 }
+      ]
+    },
+    {
+      "type": "end",
+      "name": "device2",
+      "speed": 1000,
+      "pdelay": 10,
+      "links": [
+        { "to": "switch2", "ldelay": 5, "speed": 1000 }
+      ]
+    },
+    {
+      "type": "end",
+      "name": "device3",
+      "speed": 1000,
+      "pdelay": 10,
+      "links": [
+        { "to": "switch3", "ldelay": 5, "speed": 1000 }
+      ]
+    }
+  ],
+  "flows": [
+    {
+      "name": "flow1",
+      "hops": [
+        [ "device1", "switch1" ],
+        [ "switch1", "switch2" ],
+        [ "switch2", "device2" ]
+      ],
+      "period": 1000000,
+      "length": 1500,
+      "sequence": 1,
+      "max_latency": 1000000
+    },
+    {
+      "name": "flow2",
+      "hops": [
+        [ "device2", "switch2" ],
+        [ "switch2", "switch1" ],
+        [ "switch1", "device1" ]
+      ],
+      "period": 2000000,
+      "length": 1500,
+      "sequence": 2,
+      "max_latency": 1000000
+    },
+    {
+      "name": "flow3",
+      "hops": [
+        [ "device1", "switch1" ],
+        [ "switch1", "switch2" ],
+        [ "switch2", "device2" ],
+        [ "switch1", "switch3" ],
+        [ "switch3", "device3" ]
+      ],
+      "period": 2000000,
+      "length": 1500,
+      "sequence": 0,
+      "max_latency": 1000000
+    },
+    {
+      "name": "flow4",
+      "hops": [
+        [ "device1", "switch1" ],
+        [ "device2", "switch2" ],
+        [ "switch2", "switch1" ],
+        [ "switch1", "switch3" ],
+        [ "switch3", "device3" ]
+      ],
+      "period": 4000000,
+      "length": 1500,
+      "sequence": 1,
+      "max_latency": 1000000
+    }
+  ]
+}

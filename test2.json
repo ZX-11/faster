@@ -1,0 +1,114 @@
+{
+  "devices": [
+    {
+      "type": "switch",
+      "name": "sw0",
+      "pdelay": 10,
+      "links": [
+        { "to": "d0", "ldelay": 0, "speed": 100 },
+        { "to": "sw1", "ldelay": 0, "speed": 100 },
+        { "to": "sw3", "ldelay": 0, "speed": 100 }
+      ]
+    },
+    {
+      "type": "switch",
+      "name": "sw1",
+      "pdelay": 10,
+      "links": [
+        { "to": "d1", "ldelay": 0, "speed": 100 },
+        { "to": "sw0", "ldelay": 0, "speed": 100 },
+        { "to": "sw2", "ldelay": 0, "speed": 100 }
+      ]
+    },
+    {
+      "type": "switch",
+      "name": "sw2",
+      "pdelay": 10,
+      "links": [
+        { "to": "d2", "ldelay": 0, "speed": 100 },
+        { "to": "sw1", "ldelay": 0, "speed": 100 },
+        { "to": "sw3", "ldelay": 0, "speed": 100 }
+      ]
+    },
+    {
+      "type": "switch",
+      "name": "sw3",
+      "pdelay": 10,
+      "links": [
+        { "to": "d3", "ldelay": 0, "speed": 100 },
+        { "to": "sw0", "ldelay": 0, "speed": 100 },
+        { "to": "sw2", "ldelay": 0, "speed": 100 }
+      ]
+    },
+    {
+      "type": "end",
+      "name": "d0",
+      "speed": 100,
+      "pdelay": 0,
+      "links": [
+        { "to": "sw0", "ldelay": 0, "speed": 100 }
+      ]
+    },
+    {
+      "type": "end",
+      "name": "d1",
+      "speed": 100,
+      "pdelay": 0,
+      "links": [
+        { "to": "sw1", "ldelay": 0, "speed": 100 }
+      ]
+    },
+    {
+      "type": "end",
+      "name": "d2",
+      "speed": 100,
+      "pdelay": 0,
+      "links": [
+        { "to": "sw2", "ldelay": 0, "speed": 100 }
+      ]
+    },
+    {
+      "type": "end",
+      "name": "d3",
+      "speed": 100,
+      "pdelay": 0,
+      "links": [
+        { "to": "sw3", "ldelay": 0, "speed": 100 }
+      ]
+    }
+  ],
+  "flows": [
+    {
+      "name": "f0",
+      "route": ["d0", "sw0", "sw1", "sw2", "d2"],
+      "period": 1000000,
+      "length": 1500,
+      "sequence": 0,
+      "max_latency": 1000000
+    },
+    {
+      "name": "f1",
+      "route": ["d1", "sw1", "sw2", "sw3", "d3"],
+      "period": 2000000,
+      "length": 1500,
+      "sequence": 0,
+      "max_latency": 1000000
+    },
+    {
+      "name": "f2",
+      "route": ["d2", "sw2", "sw3", "sw0", "d0"],
+      "period": 2000000,
+      "length": 1500,
+      "sequence": 0,
+      "max_latency": 1000000
+    },
+    {
+      "name": "f3",
+      "route": ["d3", "sw3", "sw0", "sw1", "d1"],
+      "period": 4000000,
+      "length": 1500,
+      "sequence": 0,
+      "max_latency": 1000000
+    }
+  ]
+}

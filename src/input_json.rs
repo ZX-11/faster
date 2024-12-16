@@ -47,13 +47,14 @@ pub fn process(filename: &str) -> &'static ProcessedInput {
     let mut input: Input = serde_json::from_slice(fs::read(filename).unwrap().as_slice()).unwrap();
     let p = init_processed_input();
 
+    // 如果使用不同的输入格式，可以重写以下的处理逻辑
+
     for f in input.flows.iter_mut() {
         if let Some(route) = &f.route {
             f.hops = Some(route.windows(2).map(|w| (w[0], w[1])).collect());
         }
     }
 
-    // 如果使用不同的输入格式，可以重写以下的处理逻辑
     p.devices = input
         .devices
         .iter()

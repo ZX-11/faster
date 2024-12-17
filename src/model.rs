@@ -1,9 +1,12 @@
 use fxhash::{FxHashMap, FxHashSet};
+use indexmap::IndexMap;
 use petgraph::Graph;
 use smallvec::SmallVec;
 use std::{any::Any, cell::RefCell, collections::VecDeque, sync::{Mutex, MutexGuard}, u64};
 use ustr::{Ustr, UstrMap};
 use rayon::prelude::*;
+
+type FxIndexMap<K, V> = IndexMap<K, V, fxhash::FxBuildHasher>;
 
 #[derive(Default)]
 pub struct ProcessedInput {
@@ -70,8 +73,7 @@ pub struct Flow<'a> {
     pub sequence: u32,
 
     // 拓扑相关
-    pub links: Vec<&'a Link>,
-    pub link_map: FxHashMap<(Ustr, Ustr), &'a Link>,
+    pub links: FxIndexMap<(Ustr, Ustr), &'a Link>,  // 保持插入顺序的哈希表
     pub predecessors: FxHashMap<(Ustr, Ustr), Vec<(Ustr, Ustr)>>,
     pub remain_min_delay: FxHashMap<(Ustr, Ustr), u64>,
     pub routes: Vec<((Ustr, Ustr), (Ustr, Ustr))>,
@@ -131,7 +133,7 @@ impl<'a> Flow<'a> {
 
     pub fn first_unscheduled_link(&self) -> &'a Link {
         self.links
-            .iter()
+            .values()
             .filter(|l| !self.scheduled_link(l))
             .next()
             .unwrap()
@@ -218,7 +220,7 @@ impl<'a> Flow<'a> {
         match self.predecessors.get(&link.id) {
             Some(pred) => pred
                 .iter()
-                .map(|l| self.link_offset(l) + self.tdelay(self.link_map[l]))
+                .map(|l| self.link_offset(l) + self.tdelay(self.links[l]))
                 .max()
                 .unwrap_or(self.schedule().borrow().start_offset),
             None => self.schedule().borrow().start_offset,
@@ -227,7 +229,7 @@ impl<'a> Flow<'a> {
 
     pub fn generate_remain_min_delay(mut self, links: &FxHashMap<(Ustr, Ustr), Link>) -> Self {
         // 预构建入边映射和出度映射
-        let graph = self.links.iter().map(|l| l.id).collect::<Vec<_>>();
+        let graph = self.links.values().map(|l| l.id).collect::<Vec<_>>();
         let mut in_edges: UstrMap<SmallVec<[(Ustr, Ustr); 16]>> = Default::default();
         let mut out_degree: UstrMap<usize> = Default::default();
 
@@ -307,11 +309,11 @@ impl<'a> Flow<'a> {
 
         let mut end_map: UstrMap<SmallVec<[(Ustr, Ustr); 16]>> = Default::default();
 
-        for hop in self.links.iter().map(|l| l.id) {
+        for hop in self.links.values().map(|l| l.id) {
             end_map.entry(hop.0).or_default().push(hop);
         }
 
-        for hop in self.links.iter().map(|l| l.id) {
+        for hop in self.links.values().map(|l| l.id) {
             if let Some(next_hops) = end_map.get(&hop.1) {
                 for &next_hop in next_hops {
                     assert!(next_hop != hop);
@@ -440,18 +442,26 @@ pub fn sort_hops(
     (sorted_hops, predecessors)
 }
 
-fn gcd(a: u64, b: u64) -> u64 {
-    if b == 0 {
-        a
-    } else {
-        gcd(b, a % b)
+fn gcd(mut a: u64, mut b: u64) -> u64 {
+    while b != 0 {
+        let t = b;
+        b = a % b;
+        a = t;
     }
+    a
 }
 
 fn lcm(a: u64, b: u64) -> u64 {
     (a / gcd(a, b)) * b
 }
 
-pub fn lcm_all(it: impl Iterator<Item = u64>) -> u64 {
-    it.fold(1, |acc, x| lcm(acc, x))
+fn lcm_all(it: impl Iterator<Item = u64>) -> u64 {
+    let mut acc: u64 = 1;
+    for n in it {
+        if n == 0 {
+            return 0;
+        }
+        acc = (acc * n) / gcd(acc, n);
+    }
+    acc
 }

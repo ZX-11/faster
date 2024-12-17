@@ -139,6 +139,7 @@ version = "0.1.0"
 dependencies = [
  "derive_deref",
  "fxhash",
+ "indexmap",
  "json5",
  "petgraph",
  "rayon",

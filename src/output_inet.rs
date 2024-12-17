@@ -89,7 +89,7 @@ pub fn output(processed_input: &ProcessedInput, filename: &str) {
         output.flows.push(Flow {
             name: original_flow.name,
             first_sending_time: first_sending_time as f64 / 1_000.0,
-            average_latency: (last_offset + model_flow.tdelay(model_flow.link_map[last_link])
+            average_latency: (last_offset + model_flow.tdelay(model_flow.links[last_link])
                 - first_sending_time) as f64
                 / 1_000.0,
             jitter: 0.0,
@@ -123,7 +123,7 @@ pub fn output(processed_input: &ProcessedInput, filename: &str) {
                     priority_slots
                         .entry(flow.priority_value as u32)
                         .or_default()
-                        .push((*offset, model_flow.tdelay(model_flow.link_map[&link_id])));
+                        .push((*offset, model_flow.tdelay(model_flow.links[&link_id])));
                     flow_offset
                         .entry(flow.name)
                         .or_default()

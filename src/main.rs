@@ -164,7 +164,7 @@ fn main() {
 
                 // 反向处理被破环的流（从最后破环的开始）
                 for f in breakloop.iter().rev() {
-                    for link in f.links.iter().filter(|l| !f.scheduled_link(l)) {
+                    for link in f.links.values().filter(|l| !f.scheduled_link(l)) {
                         start_offset.fetch_max(if no_seq {
                             f.schedule_link(flows.values(), link)
                         } else {

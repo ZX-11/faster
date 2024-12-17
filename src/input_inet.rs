@@ -230,8 +230,7 @@ pub fn process(filename: &str, sequence_filename: &str) -> &'static ProcessedInp
                             max_latency: f.hard_constraint_time
                                 * time_scale(f.hard_constraint_time_unit),
                             sequence: get_sequence(&seq, f.name),
-                            links: sorted_hops.iter().map(|h| &p.links[h]).collect(),
-                            link_map: sorted_hops.iter().map(|h| (*h, &p.links[h])).collect(),
+                            links: sorted_hops.iter().map(|h| (*h, &p.links[h])).collect(),
                             predecessors,
                             ..Default::default()
                         }
@@ -249,14 +248,6 @@ pub fn process(filename: &str, sequence_filename: &str) -> &'static ProcessedInp
                             * time_scale(f.hard_constraint_time_unit),
                         sequence: get_sequence(&seq, f.name),
                         links: hops
-                            .iter()
-                            .flat_map(|level| {
-                                level
-                                    .iter()
-                                    .map(|h| &p.links[&(h.current_node_name, h.next_node_name)])
-                            })
-                            .collect(),
-                        link_map: hops
                             .iter()
                             .flat_map(|level| {
                                 level.iter().map(|h| {

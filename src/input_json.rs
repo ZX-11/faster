@@ -100,7 +100,6 @@ pub fn process(filename: &str) -> &'static ProcessedInput {
         .iter()
         .map(|f| {
             let (sorted_hops, predecessors) = model::sort_hops(f.hops.as_ref().unwrap());
-            // 创建完整的流对象
             (
                 f.name,
                 model::Flow {
@@ -113,8 +112,7 @@ pub fn process(filename: &str) -> &'static ProcessedInput {
                     } else {
                         f.sequence
                     },
-                    links: sorted_hops.iter().map(|h| &p.links[h]).collect(),
-                    link_map: sorted_hops.iter().map(|h| (*h, &p.links[h])).collect(),
+                    links: sorted_hops.iter().map(|h| (*h, &p.links[h])).collect(),
                     predecessors,
                     ..Default::default()
                 }

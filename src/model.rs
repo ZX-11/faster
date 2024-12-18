@@ -4,7 +4,6 @@ use petgraph::Graph;
 use smallvec::SmallVec;
 use std::{any::Any, cell::RefCell, collections::VecDeque, sync::{Mutex, MutexGuard}, u64};
 use ustr::{Ustr, UstrMap};
-use rayon::prelude::*;
 
 type FxIndexMap<K, V> = IndexMap<K, V, fxhash::FxBuildHasher>;
 

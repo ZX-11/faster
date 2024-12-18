@@ -1,18 +1,25 @@
 #[macro_use]
 extern crate derive_deref;
 
-use std::{collections::BTreeMap, error::Error, sync::{atomic::{AtomicU64, Ordering}, Arc}};
+use fxhash::FxHashMap;
+use model::{Network, PreGraph, ProcessedInput, Route};
 use petgraph::algo::is_cyclic_directed;
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use smallvec::SmallVec;
+use std::{
+    collections::BTreeMap,
+    error::Error,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+};
 use ustr::UstrMap;
-use fxhash::FxHashMap;
-use model::{Network, PreGraph, ProcessedInput, Route};
 
-mod input_json;
 mod input_inet;
-mod output_inet;
+mod input_json;
 mod model;
+mod output_inet;
 
 enum InputType<'a> {
     Inet(&'a str, &'a str),
@@ -23,7 +30,9 @@ enum OutputType<'a> {
     Console,
 }
 
-fn parse_args<'a>(mut args: impl Iterator<Item = &'a str>) -> Result<(InputType<'a>, OutputType<'a>), Box<dyn Error>> {
+fn parse_args<'a>(
+    mut args: impl Iterator<Item = &'a str>,
+) -> Result<(InputType<'a>, OutputType<'a>), Box<dyn Error>> {
     let mut input_type = None;
     let mut output_type = None;
     while let Some(arg) = args.next() {
@@ -60,10 +69,9 @@ fn parse_args<'a>(mut args: impl Iterator<Item = &'a str>) -> Result<(InputType<
     }
 }
 
-
 fn main() {
-    let args: SmallVec::<[String; 8]> = std::env::args().collect();
-    
+    let args: SmallVec<[String; 8]> = std::env::args().collect();
+
     let (input_type, output_type) = parse_args(args.iter().map(AsRef::as_ref).skip(1)).unwrap();
 
     let processed_input @ ProcessedInput {
@@ -165,11 +173,14 @@ fn main() {
                 // 反向处理被破环的流（从最后破环的开始）
                 for f in breakloop.iter().rev() {
                     for link in f.links.values().filter(|l| !f.scheduled_link(l)) {
-                        start_offset.fetch_max(if no_seq {
-                            f.schedule_link(flows.values(), link)
-                        } else {
-                            f.schedule_link(seq_flows.values(), link)
-                        }, Ordering::SeqCst);
+                        start_offset.fetch_max(
+                            if no_seq {
+                                f.schedule_link(flows.values(), link)
+                            } else {
+                                f.schedule_link(seq_flows.values(), link)
+                            },
+                            Ordering::SeqCst,
+                        );
                     }
                 }
 
@@ -179,7 +190,7 @@ fn main() {
                 const PARALLEL_THRESHOLD: usize = 8;
 
                 let start_offset = start_offset.clone();
-                
+
                 let schedule_link = |link: &&model::Link| {
                     // 获取当前链路待调度的流
                     let mut flows_to_sched = link
@@ -207,7 +218,11 @@ fn main() {
                                 } else {
                                     f.schedule_link(seq_flows.values(), link)
                                 },
-                                if queue.len() < PARALLEL_THRESHOLD { Ordering::Relaxed } else { Ordering::SeqCst }
+                                if queue.len() < PARALLEL_THRESHOLD {
+                                    Ordering::Relaxed
+                                } else {
+                                    Ordering::SeqCst
+                                },
                             );
                         });
                 };

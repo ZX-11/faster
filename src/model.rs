@@ -367,22 +367,24 @@ impl<'a> PreGraph<'a> {
     }
 }
 
-
+// 优化为双指针查找，时间复杂度降低为线性
 pub fn conflict_with(slots: &[(u64, u64)], occupied: &[(u64, u64)]) -> bool {
-    let conflict = |&(start, end)| {
-        occupied.binary_search_by(|&(occupied_start, occupied_end)| match true {
-            _ if occupied_end <= start => std::cmp::Ordering::Less,
-            _ if occupied_start >= end => std::cmp::Ordering::Greater,
-            _ => std::cmp::Ordering::Equal,
-        }).is_ok()
-    };
-    if slots.len() < 64 && occupied.len() < 512 {
-        // 串行处理
-        slots.into_iter().any(conflict)
-    } else {
-        // 并行处理
-        slots.into_par_iter().any(conflict)
+    let mut i = 0;
+    let mut j = 0;
+    
+    while i < slots.len() && j < occupied.len() {
+        let (s1, e1) = unsafe { *slots.get_unchecked(i) };
+        let (s2, e2) = unsafe { *occupied.get_unchecked(j) };
+        
+        if e1 <= s2 {
+            i += 1;
+        } else if e2 <= s1 {
+            j += 1;
+        } else {
+            return true;
+        }
     }
+    false
 }
 
 pub fn sort_hops(

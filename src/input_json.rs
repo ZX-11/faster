@@ -15,7 +15,7 @@ pub struct Input {
 #[derive(Deserialize, Debug)]
 pub struct Flow {
     pub name: Ustr,
- 
+
     // require either route or hops
     pub route: Option<Vec<Ustr>>,
     pub hops: Option<FxHashSet<(Ustr, Ustr)>>,
@@ -79,8 +79,14 @@ pub fn process(filename: &str) -> &'static ProcessedInput {
                     (d.name, ln.to),
                     model::Link {
                         id: (d.name, ln.to),
-                        from: p.devices[&d.name],
-                        _to: p.devices[&ln.to],
+                        from: *p
+                            .devices
+                            .get(&d.name)
+                            .expect(&format!("Cannot find device in json: {}", d.name)),
+                        _to: *p
+                            .devices
+                            .get(&ln.to)
+                            .expect(&format!("Cannot find link in json: {}", ln.to)),
                         delay: ln.ldelay,
                         speed: ln.speed,
                         flows: input
@@ -112,7 +118,18 @@ pub fn process(filename: &str) -> &'static ProcessedInput {
                     } else {
                         f.sequence
                     },
-                    links: sorted_hops.iter().map(|h| (*h, &p.links[h])).collect(),
+                    links: sorted_hops
+                        .iter()
+                        .map(|h| {
+                            (
+                                *h,
+                                p.links.get(h).expect(&format!(
+                                    "Cannot find link in json: ({}, {})",
+                                    h.0, h.1
+                                )),
+                            )
+                        })
+                        .collect(),
                     predecessors,
                     ..Default::default()
                 }

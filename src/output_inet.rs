@@ -252,5 +252,5 @@ fn eth_index(input: &str) -> Option<u32> {
     let re = Regex::new(r"eth\[(\d+)\]").unwrap();
     re.captures(input)
         .and_then(|caps| caps.get(1))
-        .and_then(|m| m.as_str().parse::<u32>().ok())
+        .and_then(|m| m.as_str().parse().ok())
 }

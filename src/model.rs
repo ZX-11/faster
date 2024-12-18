@@ -4,6 +4,7 @@ use petgraph::Graph;
 use smallvec::SmallVec;
 use std::{any::Any, cell::RefCell, collections::VecDeque, sync::{Mutex, MutexGuard}, u64};
 use ustr::{Ustr, UstrMap};
+use rayon::prelude::*;
 
 type FxIndexMap<K, V> = IndexMap<K, V, fxhash::FxBuildHasher>;
 
@@ -366,7 +367,25 @@ impl<'a> PreGraph<'a> {
     }
 }
 
-// 优化为双指针查找，时间复杂度降低为线性
+// 二分查找，时间复杂度为O(n log m)，保留该算法的实现供比较测试
+pub fn _conflict_with(slots: &[(u64, u64)], occupied: &[(u64, u64)]) -> bool {
+    let conflict = |&(start, end)| {
+        occupied.binary_search_by(|&(occupied_start, occupied_end)| match true {
+            _ if occupied_end <= start => std::cmp::Ordering::Less,
+            _ if occupied_start >= end => std::cmp::Ordering::Greater,
+            _ => std::cmp::Ordering::Equal,
+        }).is_ok()
+    };
+    if slots.len() < 64 && occupied.len() < 512 {
+        // 串行处理
+        slots.into_iter().any(conflict)
+    } else {
+        // 并行处理
+        slots.into_par_iter().any(conflict)
+    }
+}
+
+// 使用双指针法检查冲突，时间复杂度为O(n + m)
 pub fn conflict_with(slots: &[(u64, u64)], occupied: &[(u64, u64)]) -> bool {
     let mut i = 0;
     let mut j = 0;

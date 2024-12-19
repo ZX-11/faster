@@ -1,10 +1,16 @@
 use fxhash::{FxHashMap, FxHashSet};
 use indexmap::IndexMap;
 use petgraph::Graph;
-use smallvec::SmallVec;
-use std::{any::Any, cell::RefCell, collections::VecDeque, sync::{Mutex, MutexGuard}, u64};
-use ustr::{Ustr, UstrMap};
 use rayon::prelude::*;
+use smallvec::SmallVec;
+use std::{
+    any::Any,
+    cell::RefCell,
+    collections::VecDeque,
+    sync::{Mutex, MutexGuard},
+    u64,
+};
+use ustr::{Ustr, UstrMap};
 
 type FxIndexMap<K, V> = IndexMap<K, V, fxhash::FxBuildHasher>;
 
@@ -13,7 +19,7 @@ pub struct ProcessedInput {
     pub devices: UstrMap<Device>,
     pub links: FxHashMap<(Ustr, Ustr), Link>,
     pub flows: UstrMap<Flow<'static>>,
-    pub addition: Option<Box<dyn Any>>
+    pub addition: Option<Box<dyn Any>>,
 }
 
 static mut PROCESSED_INPUT: Option<ProcessedInput> = None;
@@ -48,7 +54,7 @@ pub struct Link {
     pub _to: Device,
     pub delay: u32,
     pub speed: u32,
-    pub flows: Vec<Ustr>
+    pub flows: Vec<Ustr>,
 }
 
 pub struct Route {
@@ -73,7 +79,7 @@ pub struct Flow<'a> {
     pub sequence: u32,
 
     // 拓扑相关
-    pub links: FxIndexMap<(Ustr, Ustr), &'a Link>,  // 保持插入顺序的哈希表
+    pub links: FxIndexMap<(Ustr, Ustr), &'a Link>, // 保持插入顺序的哈希表
     pub predecessors: FxHashMap<(Ustr, Ustr), Vec<(Ustr, Ustr)>>,
     pub remain_min_delay: FxHashMap<(Ustr, Ustr), u64>,
     pub routes: Vec<((Ustr, Ustr), (Ustr, Ustr))>,
@@ -179,31 +185,30 @@ impl<'a> Flow<'a> {
 
         occupied.sort();
 
-        // 遍历可能的时间槽，找到最早可用的时间槽
-        let mut found = u64::MAX;
-        for slots in occupied.windows(2) {
-            match slots {
+        let found = occupied
+            .par_windows(2)
+            .filter_map(|slots| match slots {
                 [prev, next] => {
-                    if prev.1 % self.period >= earliest
-                        && next.0 >= prev.1 + self.tdelay(link)
-                    {
-                        let slots = (0..max_time / self.period)
-                            .map(|i| i * self.period + prev.1 % self.period)
-                            .map(|start| (start, start + self.tdelay(link)))
-                            .collect::<Vec<_>>();
+                    if prev.1 % self.period >= earliest && next.0 >= prev.1 + self.tdelay(link) {
+                        let mut slots = Vec::with_capacity((max_time / self.period) as usize);
+                        slots.extend(
+                            (0..max_time / self.period)
+                                .map(|i| i * self.period + prev.1 % self.period)
+                                .map(|start| (start, start + self.tdelay(link))),
+                        );
 
-                        if !conflict_with(&slots, &occupied) {
-                            found = found.min(prev.1 % self.period);
+                        match conflict_with(&slots, &occupied) {
+                            true => None,
+                            false => Some(prev.1 % self.period),
                         }
+                    } else {
+                        None
                     }
                 }
-                _ => (),
-            }
-        }
-
-        if found == u64::MAX {
-            panic!("No feasible schedule found for flow {}", self.id);
-        }
+                _ => unreachable!(),
+            })
+            .min()
+            .expect(&format!("No feasible schedule found for flow {}", self.id));
 
         // 更新调度状态
         let schedule = self.schedule();
@@ -369,12 +374,17 @@ impl<'a> PreGraph<'a> {
 
 // 二分查找，时间复杂度为O(n log m)，保留该算法的实现供比较测试
 pub fn _conflict_with(slots: &[(u64, u64)], occupied: &[(u64, u64)]) -> bool {
+    if occupied.is_empty() {
+        return false;
+    }
     let conflict = |&(start, end)| {
-        occupied.binary_search_by(|&(occupied_start, occupied_end)| match true {
-            _ if occupied_end <= start => std::cmp::Ordering::Less,
-            _ if occupied_start >= end => std::cmp::Ordering::Greater,
-            _ => std::cmp::Ordering::Equal,
-        }).is_ok()
+        occupied
+            .binary_search_by(|&(occupied_start, occupied_end)| match true {
+                _ if occupied_end <= start => std::cmp::Ordering::Less,
+                _ if occupied_start >= end => std::cmp::Ordering::Greater,
+                _ => std::cmp::Ordering::Equal,
+            })
+            .is_ok()
     };
     if slots.len() < 64 && occupied.len() < 512 {
         // 串行处理
@@ -389,11 +399,11 @@ pub fn _conflict_with(slots: &[(u64, u64)], occupied: &[(u64, u64)]) -> bool {
 pub fn conflict_with(slots: &[(u64, u64)], occupied: &[(u64, u64)]) -> bool {
     let mut i = 0;
     let mut j = 0;
-    
+
     while i < slots.len() && j < occupied.len() {
         let (s1, e1) = unsafe { *slots.get_unchecked(i) };
         let (s2, e2) = unsafe { *occupied.get_unchecked(j) };
-        
+
         if e1 <= s2 {
             i += 1;
         } else if e2 <= s1 {

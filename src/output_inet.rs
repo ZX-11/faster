@@ -3,7 +3,6 @@ use std::{fs::File, io::Write};
 use fxhash::FxHashMap;
 use regex::Regex;
 use serde::Serialize;
-use smallvec::SmallVec;
 use ustr::{Ustr, UstrMap};
 
 use crate::{
@@ -102,7 +101,7 @@ pub fn output(processed_input: &ProcessedInput, filename: &str) {
 
     // flow_offset[flow_name][from][port] = offset
     let mut flow_offset: UstrMap<UstrMap<FxHashMap<u32, u64>>> = UstrMap::default();
-    
+
     // 处理交换机和端口信息
     for switch in &input.switches {
         let mut ports = Vec::with_capacity(switch.ports.len());
@@ -111,7 +110,7 @@ pub fn output(processed_input: &ProcessedInput, filename: &str) {
             let mut priority_slots_data = Vec::with_capacity(8);
 
             // 初始化优先级时隙数据
-            let mut priority_slots: FxHashMap<u32, Vec<(u64,u64)>> = FxHashMap::default();
+            let mut priority_slots: FxHashMap<u32, Vec<(u64, u64)>> = FxHashMap::default();
 
             let link_id = (switch.name, port.connects_to);
 
@@ -136,26 +135,29 @@ pub fn output(processed_input: &ProcessedInput, filename: &str) {
             // 转换优先级时隙数据
             for (&priority, slots) in &priority_slots {
                 priority_slots_data.push(PrioritySlotsData {
-                    slots_data: merge_slots(&mut slots.clone()).into_iter().map(|(start, duration)| SlotsData {
-                        slot_start: start as f64 / 1_000.0,
-                        slot_duration: duration as f64 / 1_000.0,
-                    }).collect(),
+                    slots_data: merge_slots(slots.clone())
+                        .into_iter()
+                        .map(|(start, duration)| SlotsData {
+                            slot_start: start as f64 / 1_000.0,
+                            slot_duration: duration as f64 / 1_000.0,
+                        })
+                        .collect(),
                     priority,
                 });
             }
 
-            let mut occupied = priority_slots
-                .values()
-                .flat_map(|v| v.iter())
-                .cloned()
-                .collect::<SmallVec<[_; 1024]>>();
-            
-            let occupied= merge_slots(&mut occupied);
+            let occupied = merge_slots(
+                priority_slots
+                    .values()
+                    .flat_map(|v| v.iter())
+                    .cloned()
+                    .collect(),
+            );
 
-            let cycle_duration = port.maximum_slot_duration
-                * time_scale(port.maximum_slot_duration_unit);
+            let cycle_duration =
+                port.maximum_slot_duration * time_scale(port.maximum_slot_duration_unit);
 
-            let mut free = Vec::with_capacity(occupied.len()+1);
+            let mut free = Vec::with_capacity(occupied.len() + 1);
 
             if occupied.len() > 0 {
                 if occupied[0].0 != 0 {
@@ -219,8 +221,11 @@ pub fn output(processed_input: &ProcessedInput, filename: &str) {
     output_file(serde_json::to_string_pretty, &flow_period, "flow-period.json").unwrap();
 }
 
-
-fn output_file<S, T, E>(ser: S, value: &T, filename: &str) -> Result<usize, Box<dyn std::error::Error>>
+fn output_file<S, T, E>(
+    ser: S,
+    value: &T,
+    filename: &str,
+) -> Result<usize, Box<dyn std::error::Error>>
 where
     T: ?Sized + Serialize,
     S: Fn(&T) -> Result<String, E>,
@@ -229,23 +234,33 @@ where
     Ok(File::create(filename)?.write(ser(value)?.as_bytes())?)
 }
 
-fn merge_slots(slots_data: &mut [(u64,u64)]) -> Vec<(u64,u64)> {
+fn merge_slots(mut slots_data: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
     if slots_data.len() <= 1 {
-        return slots_data.to_vec();
+        return slots_data;
     }
-    slots_data.sort_by_key(|&(start,_)| start);
-    let mut merged_slots = Vec::with_capacity(slots_data.len());
-    merged_slots.push(slots_data[0]);
+    slots_data.sort_by_key(|&(start, _)| start);
 
-    for (start,duration) in slots_data.into_iter().skip(1) {
-        let last = merged_slots.last_mut().unwrap();
-        if last.0 + last.1 == *start {
-            last.1 += *duration;
-        } else {
-            merged_slots.push((*start, *duration));
+    let mut w = 0;
+
+    for r in 1..slots_data.len() {
+        unsafe {
+            let curr = slots_data.get_unchecked(w);
+            let next = slots_data.get_unchecked(r);
+
+            if curr.0 + curr.1 == next.0 {
+                slots_data.get_unchecked_mut(w).1 += next.1;
+            } else {
+                w += 1;
+                if w != r {
+                    *slots_data.get_unchecked_mut(w) = *next;
+                }
+            }
         }
     }
-    merged_slots
+
+    // 截断数组，只保留合并后的区间
+    slots_data.truncate(w + 1);
+    slots_data
 }
 
 fn eth_index(input: &str) -> Option<u32> {

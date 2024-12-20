@@ -3,7 +3,11 @@ extern crate derive_deref;
 
 use fxhash::FxHashMap;
 use model::{Network, PreGraph, ProcessedInput, Route};
-use petgraph::algo::is_cyclic_directed;
+use petgraph::{
+    algo::tarjan_scc,
+    graph::NodeIndex,
+    Graph,
+};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use smallvec::SmallVec;
 use std::{
@@ -115,7 +119,11 @@ fn main() {
 
     for (sequence, seq_flows) in flow_sequence {
         let no_seq = sequence == u32::MAX;
-        let start = if no_seq { 0 } else { start_offset.load(Ordering::Relaxed) };
+        let start = if no_seq {
+            0
+        } else {
+            start_offset.load(Ordering::Relaxed)
+        };
 
         // 构建先序关系图
         let mut pre_graph = PreGraph::default();
@@ -149,38 +157,52 @@ fn main() {
 
             if queue.is_empty() {
                 // 循环直到图中没有环
-                while is_cyclic_directed(&pre_graph.graph) {
-                    // 选择紧急度最低的流进行破环
-                    let blp = seq_flows
-                        .values()
-                        .filter(|flow| !flow.schedule_done())
-                        .min_by_key(|flow| {
-                            flow.calculate_urgency(flow.first_unscheduled_link())
-                                .unwrap()
-                        })
-                        .unwrap();
+                while let Some(cycle_edges) = find_cycle_edges(&pre_graph.graph) {
+                    // 映射边到网络流量序列
+                    let mut edge_to_flows = FxHashMap::default();
+                    for flow in flows.values() {
+                        for (hop, next_hop) in &flow.routes {
+                            let edge = (link_id[hop], link_id[next_hop]);
+                            edge_to_flows
+                                .entry(edge)
+                                .or_insert_with(Vec::new)
+                                .push(flow);
+                        }
+                    }
+
+                    // 统计每个网络流量序列包含的环边数量
+                    let mut flow_to_cycle_edge_count = UstrMap::default();
+                    for edge in &cycle_edges {
+                        if let Some(flows) = edge_to_flows.get(edge) {
+                            for flow in flows {
+                                *flow_to_cycle_edge_count.entry(flow.id).or_insert(0) += 1;
+                            }
+                        }
+                    }
 
                     // 记录被破环的流
-                    breakloop.push(blp);
+                    if let Some((id, _)) = flow_to_cycle_edge_count
+                        .iter()
+                        .max_by_key(|(_, count)| *count)
+                    {
+                        let flow = &flows[id];
 
-                    // 从图中移除该流的所有边
-                    pre_graph.breakloop(blp);
+                        breakloop.push((flow, flow.calculate_urgency(flow.first_unscheduled_link()).unwrap()));
 
-                    // 移除孤立的节点
-                    pre_graph.remove_isolated_nodes();
+                        // 从图中移除该流的所有边
+                        pre_graph.breakloop(flow);
+
+                        // 移除孤立的节点
+                        pre_graph.remove_isolated_nodes();
+                    }
                 }
+                
+                breakloop.sort_unstable_by_key(|(_, urgency)| *urgency);
 
-                // 反向处理被破环的流（从最后破环的开始）
-                for f in breakloop.iter().rev() {
+                for (f, _) in breakloop.iter() {
                     for link in f.links.values().filter(|l| !f.scheduled_link(l)) {
-                        start_offset.fetch_max(
-                            if no_seq {
-                                f.schedule_link(flows.values(), link)
-                            } else {
-                                f.schedule_link(seq_flows.values(), link)
-                            },
-                            Ordering::SeqCst,
-                        );
+                        start_offset
+                            .fetch_max(f.schedule_link(flows.values(), link), Ordering::SeqCst);
                     }
                 }
 
@@ -197,20 +219,17 @@ fn main() {
                         .flows
                         .iter()
                         .map(|f| &flows[f])
-                        .filter(|f| seq_flows.contains_key(&f.id))
+                        .filter(|f| seq_flows.contains_key(&f.id) && !f.schedule_done())
+                        .map(|f| (f, f.calculate_urgency(link).unwrap()))
                         .collect::<Vec<_>>();
 
                     // 按紧急程度排序
-                    flows_to_sched.sort_unstable_by(|a, b| {
-                        let a_urgency = a.calculate_urgency(link);
-                        let b_urgency = b.calculate_urgency(link);
-                        a_urgency.cmp(&b_urgency)
-                    });
+                    flows_to_sched.sort_unstable_by_key(|(_, urgency)| *urgency);
 
                     // 依次调度，并更新下一时序的起点
                     flows_to_sched
                         .iter()
-                        .filter(|f| !f.schedule_done())
+                        .map(|(flow, _)| flow)
                         .for_each(|f| {
                             start_offset.fetch_max(
                                 if no_seq {
@@ -259,5 +278,38 @@ fn main() {
                 }
             }
         }
+    }
+}
+
+fn find_cycle_edges(graph: &Graph<&model::Link, Route>) -> Option<Vec<(NodeIndex, NodeIndex)>> {
+    let sccs = tarjan_scc(graph); // 使用 Tarjan 算法找到所有强连通分量
+    let mut cycle_edges = Vec::new();
+
+    // 遍历每个强连通分量
+    for scc in sccs {
+        // 如果强连通分量的大小大于 1，说明它是一个环
+        if scc.len() > 1 {
+            // 遍历强连通分量中的节点
+            for (i, &node_i) in scc.iter().enumerate() {
+                for j in (i + 1)..scc.len() {
+                    let node_j = unsafe { *scc.get_unchecked(j) };
+
+                    // 检查从 node_i 到 node_j 是否存在边
+                    if graph.contains_edge(node_i, node_j) {
+                        cycle_edges.push((node_i, node_j));
+                    }
+
+                    // 检查从 node_j 到 node_i 是否存在边
+                    if graph.contains_edge(node_j, node_i) {
+                        cycle_edges.push((node_j, node_i));
+                    }
+                }
+            }
+        }
+    }
+
+    match cycle_edges.len() {
+        0 => None,
+        _ => Some(cycle_edges),
     }
 }

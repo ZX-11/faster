@@ -204,12 +204,12 @@ impl<'a> Flow<'a> {
                 let mut slots = Vec::with_capacity((max_time / self.period) as usize);
                 slots.extend(
                     (0..max_time / self.period)
-                        .map(|i| i * self.period + start % self.period)
+                        .map(|i| i * self.period + start)
                         .map(|start| (start, start + self.tdelay(link))),
                 );
                 match conflict_with(&slots, &occupied) {
                     true => None,
-                    false => Some(start % self.period),
+                    false => Some(start),
                 }
             })
             .min()

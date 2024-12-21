@@ -187,12 +187,15 @@ impl<'a> Flow<'a> {
 
         let possible_starts: FxHashSet<_> = occupied
             .windows(2)
-            .filter(|slots| {
-                let prev = unsafe { slots.get_unchecked(0) };
-                let next = unsafe { slots.get_unchecked(1) };
-                prev.1 % self.period >= earliest && next.0 >= prev.1 + self.tdelay(link)
+            .filter_map(|slots| {
+                let (_, prev_end) = unsafe { *slots.get_unchecked(0) };
+                let (next_start, _) = unsafe { *slots.get_unchecked(1) };
+                let start = prev_end % self.period;
+                match start >= earliest && next_start >= prev_end + self.tdelay(link) {
+                    true => Some(start),
+                    false => None,
+                }
             })
-            .map(|slots| slots[0].1 % self.period)
             .collect();
 
         let found = possible_starts

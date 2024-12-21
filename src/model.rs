@@ -185,27 +185,29 @@ impl<'a> Flow<'a> {
 
         occupied.sort();
 
-        let found = occupied
-            .par_windows(2)
-            .filter_map(|slots| match slots {
-                [prev, next] => {
-                    if prev.1 % self.period >= earliest && next.0 >= prev.1 + self.tdelay(link) {
-                        let mut slots = Vec::with_capacity((max_time / self.period) as usize);
-                        slots.extend(
-                            (0..max_time / self.period)
-                                .map(|i| i * self.period + prev.1 % self.period)
-                                .map(|start| (start, start + self.tdelay(link))),
-                        );
+        let possible_starts: FxHashSet<_> = occupied
+            .windows(2)
+            .filter(|slots| {
+                let prev = unsafe { slots.get_unchecked(0) };
+                let next = unsafe { slots.get_unchecked(1) };
+                prev.1 % self.period >= earliest && next.0 >= prev.1 + self.tdelay(link)
+            })
+            .map(|slots| slots[0].1 % self.period)
+            .collect();
 
-                        match conflict_with(&slots, &occupied) {
-                            true => None,
-                            false => Some(prev.1 % self.period),
-                        }
-                    } else {
-                        None
-                    }
+        let found = possible_starts
+            .par_iter()
+            .filter_map(|&start| {
+                let mut slots = Vec::with_capacity((max_time / self.period) as usize);
+                slots.extend(
+                    (0..max_time / self.period)
+                        .map(|i| i * self.period + start % self.period)
+                        .map(|start| (start, start + self.tdelay(link))),
+                );
+                match conflict_with(&slots, &occupied) {
+                    true => None,
+                    false => Some(start % self.period),
                 }
-                _ => unreachable!(),
             })
             .min()
             .expect(&format!("No feasible schedule found for flow {}", self.id));

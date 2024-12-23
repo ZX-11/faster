@@ -88,14 +88,23 @@ impl<'a> AsRef<Flow<'a>> for Flow<'a> {
 }
 
 impl<'a> Flow<'a> {
+    #[inline]
     pub fn schedule_done(&self) -> bool {
-        self.schedule_done.load(std::sync::atomic::Ordering::Relaxed)
+        self.schedule_done
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    #[inline]
     pub fn start_offset(&self) -> u64 {
         self.start_offset.load(Ordering::Relaxed)
     }
 
+    #[inline]
+    pub fn breakloop(&self) -> bool {
+        self.breakloop.load(Ordering::Relaxed)
+    }
+
+    #[inline]
     pub fn link_offset(&self, link_id: &(Ustr, Ustr)) -> u64 {
         self.link_offsets.get(link_id).unwrap().clone()
     }
@@ -110,22 +119,27 @@ impl<'a> Flow<'a> {
         }
     }
 
+    #[inline]
     pub fn ldelay(&self, link: &'a Link) -> u64 {
         link.delay as u64
     }
 
+    #[inline]
     pub fn pdelay(&self, link: &'a Link) -> u64 {
         link.from.pdelay
     }
 
+    #[inline]
     pub fn tdelay(&self, link: &'a Link) -> u64 {
         (self.length * 8000 / link.speed) as u64
     }
 
+    #[inline]
     pub fn sfdelay(&self, link: &'a Link) -> u64 {
         self.pdelay(link) // 目前未考虑接收存储转发所需时间
     }
 
+    #[inline]
     pub fn scheduled_link(&self, link: &'a Link) -> bool {
         self.link_offsets.contains_key(&link.id)
     }
@@ -347,16 +361,19 @@ pub struct PreGraph<'a> {
 impl<'a> PreGraph<'a> {
     /// 移除指定流的所有路由边，并标记该流为破环状态
     pub fn breakloop(&mut self, flow: &Flow) {
-        // flow.mark_breakloop();
+        // 标记流为破环状态
+        flow.breakloop.store(true, Ordering::Relaxed);
 
         // 使用 retain 方法保留不需要删除的边
         self.graph.retain_edges(|graph, edge_idx| {
-            if let Some(route) = graph.edge_weight(edge_idx) {
-                !flow.routes.contains(&route.id)
-            } else {
-                true
-            }
+            graph
+                .edge_weight(edge_idx)
+                .map(|r| !flow.routes.contains(&r.id))
+                .unwrap_or(true)
         });
+
+        // 移除孤立的节点
+        self.remove_isolated_nodes();
     }
 
     /// 移除所有没有连接的节点

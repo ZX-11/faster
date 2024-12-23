@@ -1,19 +1,17 @@
-use std::fs;
-
 use fxhash::{FxHashMap, FxHashSet};
+use lazy_static::lazy_static;
 use serde::Deserialize;
-use ustr::{Ustr, UstrMap};
+use ustr::{ustr, Ustr, UstrMap};
 
 use crate::model::{self, init_processed_input, ProcessedInput};
 
-pub fn time_scale(unit: Ustr) -> u64 {
-    match unit.as_str() {
-        "ns" => 1,
-        "us" => 1000,
-        "ms" => 1000000,
-        "s" => 1000000000,
-        _ => unreachable!(),
-    }
+lazy_static!{
+    pub static ref TIME_SCALE: UstrMap<u64> = UstrMap::from_iter([
+        (ustr("ns"), 1),
+        (ustr("us"), 1000),
+        (ustr("ms"), 1000_000),
+        (ustr("s"),  1000_000_000),
+    ]);
 }
 
 #[derive(Deserialize, Debug)]
@@ -105,10 +103,10 @@ fn get_sequence(seq: &Sequence, id: Ustr) -> u32 {
 }
 
 pub fn process(filename: &str, sequence_filename: &str) -> &'static ProcessedInput {
-    let mut input: Config = json5::from_str(&fs::read_to_string(filename).unwrap()).unwrap();
+    let mut input: Config = json5::from_str(&std::fs::read_to_string(filename).unwrap()).unwrap();
     let seq: Sequence = match sequence_filename {
         "" => Default::default(),
-        _ => serde_json::from_slice(&fs::read(sequence_filename).unwrap()).unwrap()
+        _ => serde_json::from_slice(&std::fs::read(sequence_filename).unwrap()).unwrap()
     };
     let p = init_processed_input();
 
@@ -163,7 +161,7 @@ pub fn process(filename: &str, sequence_filename: &str) -> &'static ProcessedInp
                         id: (sw.name, port.connects_to),
                         from: p.devices[&sw.name],
                         _to: p.devices[&port.connects_to],
-                        delay: (port.time_to_travel * time_scale(port.time_to_travel_unit) as f64)
+                        delay: (port.time_to_travel * TIME_SCALE[&port.time_to_travel_unit] as f64)
                             as u32,
                         speed: port.port_speed
                             * if port.port_speed_size_unit == "bit" {
@@ -193,7 +191,7 @@ pub fn process(filename: &str, sequence_filename: &str) -> &'static ProcessedInp
                             from: p.devices[&port.connects_to],
                             _to: p.devices[&sw.name],
                             delay: (port.time_to_travel
-                                * time_scale(port.time_to_travel_unit) as f64)
+                                * TIME_SCALE[&port.time_to_travel_unit] as f64)
                                 as u32,
                             speed: port.port_speed
                                 * if port.port_speed_size_unit == "bit" {
@@ -225,9 +223,9 @@ pub fn process(filename: &str, sequence_filename: &str) -> &'static ProcessedInp
                         model::Flow {
                             id: f.name,
                             length: f.packet_size / if f.packet_size_unit == "bit" { 8 } else { 1 },
-                            period: f.packet_periodicity * time_scale(f.packet_periodicity_unit),
+                            period: f.packet_periodicity * TIME_SCALE[&f.packet_periodicity_unit],
                             max_latency: f.hard_constraint_time
-                                * time_scale(f.hard_constraint_time_unit),
+                                * TIME_SCALE[&f.hard_constraint_time_unit],
                             sequence: get_sequence(&seq, f.name),
                             links: sorted_hops.iter().map(|h| (*h, &p.links[h])).collect(),
                             predecessors,
@@ -242,9 +240,9 @@ pub fn process(filename: &str, sequence_filename: &str) -> &'static ProcessedInp
                     model::Flow {
                         id: f.name,
                         length: f.packet_size / if f.packet_size_unit == "bit" { 8 } else { 1 },
-                        period: f.packet_periodicity * time_scale(f.packet_periodicity_unit),
+                        period: f.packet_periodicity * TIME_SCALE[&f.packet_periodicity_unit],
                         max_latency: f.hard_constraint_time
-                            * time_scale(f.hard_constraint_time_unit),
+                            * TIME_SCALE[&f.hard_constraint_time_unit],
                         sequence: get_sequence(&seq, f.name),
                         links: hops
                             .iter()

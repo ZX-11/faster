@@ -6,7 +6,7 @@ use serde::Serialize;
 use ustr::{Ustr, UstrMap};
 
 use crate::{
-    input_inet::{self, time_scale},
+    input_inet::{self, TIME_SCALE},
     model::ProcessedInput,
 };
 
@@ -98,7 +98,7 @@ pub fn output(processed_input: &ProcessedInput, filename: &str) {
             jitter: 0.0,
             flow_priority: original_flow.priority_value,
             flow_periodicity: (original_flow.packet_periodicity
-                * time_scale(original_flow.packet_periodicity_unit)
+                * TIME_SCALE[&original_flow.packet_periodicity_unit]
                 / 1_000) as u32,
         });
     }
@@ -158,7 +158,7 @@ pub fn output(processed_input: &ProcessedInput, filename: &str) {
             );
 
             let cycle_duration =
-                port.maximum_slot_duration * time_scale(port.maximum_slot_duration_unit);
+                port.maximum_slot_duration * TIME_SCALE[&port.maximum_slot_duration_unit];
 
             let mut free = Vec::with_capacity(occupied.len() + 1);
 

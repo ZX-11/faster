@@ -1,9 +1,9 @@
 #[macro_use]
 extern crate derive_deref;
 
-use fxhash::FxHashMap;
+use fxhash::{FxHashMap, FxHashSet};
 use model::{Network, PreGraph, ProcessedInput, Route};
-use petgraph::{algo::tarjan_scc, graph::NodeIndex, Graph};
+use petgraph::{algo::tarjan_scc, graph::NodeIndex, visit::EdgeRef, Graph};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use smallvec::SmallVec;
 use std::{
@@ -286,35 +286,23 @@ fn main() {
     }
 }
 
-fn find_cycle_edges(graph: &Graph<&model::Link, Route>) -> Option<Vec<(NodeIndex, NodeIndex)>> {
+fn find_cycle_edges(graph: &Graph<&model::Link, Route>) -> Option<FxHashSet<(NodeIndex, NodeIndex)>> {
     let sccs = tarjan_scc(graph); // 使用 Tarjan 算法找到所有强连通分量
-    let mut cycle_edges = Vec::new();
+    let mut cycle_edges = FxHashSet::default();
 
-    // 遍历每个强连通分量
-    for scc in sccs {
-        // 如果强连通分量的大小大于 1，说明它是一个环
-        if scc.len() > 1 {
-            // 遍历强连通分量中的节点
-            for (i, &node_i) in scc.iter().enumerate() {
-                for j in (i + 1)..scc.len() {
-                    let node_j = unsafe { *scc.get_unchecked(j) };
-
-                    // 检查从 node_i 到 node_j 是否存在边
-                    if graph.contains_edge(node_i, node_j) {
-                        cycle_edges.push((node_i, node_j));
-                    }
-
-                    // 检查从 node_j 到 node_i 是否存在边
-                    if graph.contains_edge(node_j, node_i) {
-                        cycle_edges.push((node_j, node_i));
-                    }
+    for scc in sccs.into_iter().filter(|scc| scc.len() > 1) {
+        for &node_i in &scc {
+            for node_j in graph.edges(node_i).map(|e| e.target()) {
+                if scc.contains(&node_j) {
+                    cycle_edges.insert((node_i, node_j));
                 }
             }
         }
     }
 
-    match cycle_edges.len() {
-        0 => None,
-        _ => Some(cycle_edges),
+    if cycle_edges.is_empty() {
+        None
+    } else {
+        Some(cycle_edges)
     }
 }

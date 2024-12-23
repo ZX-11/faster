@@ -1,6 +1,4 @@
-use dashmap::DashMap;
 use fxhash::{FxBuildHasher, FxHashMap, FxHashSet};
-use indexmap::IndexMap;
 use petgraph::Graph;
 use rayon::prelude::*;
 use smallvec::SmallVec;
@@ -12,8 +10,8 @@ use std::{
 };
 use ustr::{Ustr, UstrMap};
 
-type FxIndexMap<K, V> = IndexMap<K, V, fxhash::FxBuildHasher>;
-type FxDashMap<K, V> = DashMap<K, V, FxBuildHasher>;
+type FxIndexMap<K, V> = indexmap::IndexMap<K, V, FxBuildHasher>;
+type FxDashMap<K, V> = dashmap::DashMap<K, V, FxBuildHasher>;
 
 #[derive(Default)]
 pub struct ProcessedInput {

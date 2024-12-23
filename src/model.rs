@@ -78,6 +78,7 @@ pub struct Flow<'a> {
     pub link_offsets: FxDashMap<(Ustr, Ustr), u64>,
     pub start_offset: AtomicU64,
     pub schedule_done: AtomicBool,
+    pub breakloop: AtomicBool,
 }
 
 impl<'a> AsRef<Flow<'a>> for Flow<'a> {

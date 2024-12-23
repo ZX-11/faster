@@ -3,18 +3,16 @@ extern crate derive_deref;
 
 use fxhash::FxHashMap;
 use model::{Network, PreGraph, ProcessedInput, Route};
-use petgraph::{
-    algo::tarjan_scc,
-    graph::NodeIndex,
-    Graph,
-};
+use petgraph::{algo::tarjan_scc, graph::NodeIndex, Graph};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use smallvec::SmallVec;
 use std::{
-    collections::BTreeMap, error::Error, sync::{
+    collections::BTreeMap,
+    error::Error,
+    sync::{
         atomic::{AtomicU64, Ordering},
         Arc,
-    }
+    },
 };
 use ustr::UstrMap;
 
@@ -185,7 +183,13 @@ fn main() {
                     {
                         let flow = &flows[id];
 
-                        breakloop.push((flow, flow.calculate_urgency(flow.first_unscheduled_link()).unwrap()));
+                        flow.breakloop.store(true, Ordering::Relaxed);
+
+                        breakloop.push((
+                            flow,
+                            flow.calculate_urgency(flow.first_unscheduled_link())
+                                .unwrap(),
+                        ));
 
                         // 从图中移除该流的所有边
                         pre_graph.breakloop(flow);
@@ -194,13 +198,13 @@ fn main() {
                         pre_graph.remove_isolated_nodes();
                     }
                 }
-                
+
                 breakloop.sort_unstable_by_key(|(_, urgency)| *urgency);
 
                 for (f, _) in breakloop.iter() {
                     for link in f.links.values().filter(|l| !f.scheduled_link(l)) {
                         start_offset
-                            .fetch_max(f.schedule_link(flows.values(), link), Ordering::SeqCst);
+                            .fetch_max(f.schedule_link(flows.values(), link), Ordering::Relaxed);
                     }
                 }
 
@@ -217,7 +221,11 @@ fn main() {
                         .flows
                         .iter()
                         .map(|f| &flows[f])
-                        .filter(|f| seq_flows.contains_key(&f.id) && !f.schedule_done())
+                        .filter(|f| {
+                            seq_flows.contains_key(&f.id)
+                                && !f.schedule_done()
+                                && !f.breakloop.load(Ordering::Relaxed)
+                        })
                         .map(|f| (f, f.calculate_urgency(link).unwrap()))
                         .collect::<Vec<_>>();
 
@@ -225,23 +233,20 @@ fn main() {
                     flows_to_sched.sort_unstable_by_key(|(_, urgency)| *urgency);
 
                     // 依次调度，并更新下一时序的起点
-                    flows_to_sched
-                        .iter()
-                        .map(|(flow, _)| flow)
-                        .for_each(|f| {
-                            start_offset.fetch_max(
-                                if no_seq {
-                                    f.schedule_link(flows.values(), link)
-                                } else {
-                                    f.schedule_link(seq_flows.values(), link)
-                                },
-                                if queue.len() < PARALLEL_THRESHOLD {
-                                    Ordering::Relaxed
-                                } else {
-                                    Ordering::SeqCst
-                                },
-                            );
-                        });
+                    flows_to_sched.iter().map(|(flow, _)| flow).for_each(|f| {
+                        start_offset.fetch_max(
+                            if no_seq {
+                                f.schedule_link(flows.values(), link)
+                            } else {
+                                f.schedule_link(seq_flows.values(), link)
+                            },
+                            if queue.len() < PARALLEL_THRESHOLD {
+                                Ordering::Relaxed
+                            } else {
+                                Ordering::SeqCst
+                            },
+                        );
+                    });
                 };
 
                 // 根据队列大小选择串行或并行处理

@@ -1,4 +1,3 @@
-use core::panic;
 use std::fs;
 
 use fxhash::{FxHashMap, FxHashSet};
@@ -93,14 +92,14 @@ type Sequence = UstrMap<u32>;
 
 fn get_sequence(seq: &Sequence, id: Ustr) -> u32 {
     match seq.get(&id) {
-        Some(&s) if s != 0 => s,
+        Some(&s) =>s,
         _ => {
             for (pat, s) in seq {
                 if regex::Regex::new(pat.as_str()).unwrap().is_match(id.as_str()) {
                     return *s;
                 }
             }
-            panic!("not found");
+            0
         }
     }
 }

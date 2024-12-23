@@ -76,19 +76,23 @@ pub fn output(processed_input: &ProcessedInput, filename: &str) {
     // 处理流信息
     for original_flow in &input.flows {
         let model_flow = &processed_input.flows[&original_flow.name];
-        let schedule = model_flow.schedule();
-        let schedule = schedule.borrow();
-        let first_sending_time = schedule.link_offsets.values().min().cloned().unwrap();
-        let (last_link, last_offset) = schedule
+        let first_sending_time = model_flow
             .link_offsets
             .iter()
+            .map(|e| e.value().clone())
+            .min()
+            .unwrap();
+        let (last_link, last_offset) = model_flow
+            .link_offsets
+            .iter()
+            .map(|e| (e.key().clone(), e.value().clone()))
             .max_by_key(|(_, offset)| *offset)
             .unwrap();
 
         output.flows.push(Flow {
             name: original_flow.name,
             first_sending_time: first_sending_time as f64 / 1_000.0,
-            average_latency: (last_offset + model_flow.tdelay(model_flow.links[last_link])
+            average_latency: (last_offset + model_flow.tdelay(model_flow.links[&last_link])
                 - first_sending_time) as f64
                 / 1_000.0,
             jitter: 0.0,
@@ -118,18 +122,17 @@ pub fn output(processed_input: &ProcessedInput, filename: &str) {
             for flow in input.flows.iter().filter(|f| f.hop_set.contains(&link_id)) {
                 // 获取流的调度信息
                 let model_flow = &processed_input.flows[&flow.name];
-                if let Some(offset) = model_flow.schedule().borrow().link_offsets.get(&link_id) {
-                    priority_slots
-                        .entry(flow.priority_value as u32)
-                        .or_default()
-                        .push((*offset, model_flow.tdelay(model_flow.links[&link_id])));
-                    flow_offset
-                        .entry(flow.name)
-                        .or_default()
-                        .entry(switch.name)
-                        .or_default()
-                        .insert(eth_index(port.name.into()).unwrap(), *offset);
-                }
+                let offset = model_flow.link_offset(&link_id);
+                priority_slots
+                    .entry(flow.priority_value)
+                    .or_default()
+                    .push((offset, model_flow.tdelay(model_flow.links[&link_id])));
+                flow_offset
+                    .entry(flow.name)
+                    .or_default()
+                    .entry(switch.name)
+                    .or_default()
+                    .insert(eth_index(port.name.into()).unwrap(), offset);
             }
 
             // 转换优先级时隙数据
@@ -264,8 +267,8 @@ fn merge_slots(mut slots_data: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
 }
 
 fn eth_index(input: &str) -> Option<u32> {
-    let re = Regex::new(r"eth\[(\d+)\]").unwrap();
-    re.captures(input)
+    Regex::new(r"eth\[(\d+)\]").unwrap()
+        .captures(input)
         .and_then(|caps| caps.get(1))
         .and_then(|m| m.as_str().parse().ok())
 }

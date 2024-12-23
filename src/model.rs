@@ -1,18 +1,19 @@
-use fxhash::{FxHashMap, FxHashSet};
+use dashmap::DashMap;
+use fxhash::{FxBuildHasher, FxHashMap, FxHashSet};
 use indexmap::IndexMap;
 use petgraph::Graph;
 use rayon::prelude::*;
 use smallvec::SmallVec;
 use std::{
     any::Any,
-    cell::RefCell,
     collections::VecDeque,
-    sync::{Mutex, MutexGuard},
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
     u64,
 };
 use ustr::{Ustr, UstrMap};
 
 type FxIndexMap<K, V> = IndexMap<K, V, fxhash::FxBuildHasher>;
+type FxDashMap<K, V> = DashMap<K, V, FxBuildHasher>;
 
 #[derive(Default)]
 pub struct ProcessedInput {
@@ -61,15 +62,6 @@ pub struct Route {
     pub id: ((Ustr, Ustr), (Ustr, Ustr)),
 }
 
-/// Dynamic scheduling information for a flow
-#[derive(Debug, Default)]
-pub struct FlowSchedule {
-    pub done: bool,
-    pub scheduled_links: usize,
-    pub start_offset: u64,
-    pub link_offsets: FxHashMap<(Ustr, Ustr), u64>,
-}
-
 #[derive(Debug, Default)]
 pub struct Flow<'a> {
     pub id: Ustr,
@@ -85,7 +77,9 @@ pub struct Flow<'a> {
     pub routes: Vec<((Ustr, Ustr), (Ustr, Ustr))>,
 
     // 调度状态
-    pub schedule: Mutex<RefCell<FlowSchedule>>,
+    pub link_offsets: FxDashMap<(Ustr, Ustr), u64>,
+    pub start_offset: AtomicU64,
+    pub schedule_done: AtomicBool,
 }
 
 impl<'a> AsRef<Flow<'a>> for Flow<'a> {
@@ -95,16 +89,16 @@ impl<'a> AsRef<Flow<'a>> for Flow<'a> {
 }
 
 impl<'a> Flow<'a> {
-    pub fn schedule(&self) -> MutexGuard<'_, RefCell<FlowSchedule>> {
-        self.schedule.lock().unwrap()
+    pub fn schedule_done(&self) -> bool {
+        self.schedule_done.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    pub fn schedule_done(&self) -> bool {
-        self.schedule().borrow().done
+    pub fn start_offset(&self) -> u64 {
+        self.start_offset.load(Ordering::Relaxed)
     }
 
     pub fn link_offset(&self, link_id: &(Ustr, Ustr)) -> u64 {
-        self.schedule().borrow().link_offsets[link_id]
+        self.link_offsets.get(link_id).unwrap().clone()
     }
 
     pub fn calculate_urgency(&self, link: &'a Link) -> Option<u64> {
@@ -134,7 +128,7 @@ impl<'a> Flow<'a> {
     }
 
     pub fn scheduled_link(&self, link: &'a Link) -> bool {
-        self.schedule().borrow().link_offsets.contains_key(&link.id)
+        self.link_offsets.contains_key(&link.id)
     }
 
     pub fn first_unscheduled_link(&self) -> &'a Link {
@@ -216,11 +210,10 @@ impl<'a> Flow<'a> {
             .expect(&format!("No feasible schedule found for flow {}", self.id));
 
         // 更新调度状态
-        let schedule = self.schedule();
-        let mut schedule = schedule.borrow_mut();
-        schedule.link_offsets.insert(link.id, found);
-        schedule.scheduled_links += 1;
-        schedule.done = schedule.scheduled_links == self.links.len();
+        self.link_offsets.insert(link.id, found);
+        if self.link_offsets.len() == self.links.len() {
+            self.schedule_done.store(true, Ordering::Relaxed);
+        }
 
         // 返回时间槽结束offset
         found + self.tdelay(link) + self.ldelay(link)
@@ -232,8 +225,8 @@ impl<'a> Flow<'a> {
                 .iter()
                 .map(|l| self.link_offset(l) + self.tdelay(self.links[l]))
                 .max()
-                .unwrap_or(self.schedule().borrow().start_offset),
-            None => self.schedule().borrow().start_offset,
+                .unwrap_or(self.start_offset()),
+            None => self.start_offset(),
         }
     }
 

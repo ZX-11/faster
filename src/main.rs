@@ -11,12 +11,10 @@ use petgraph::{
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use smallvec::SmallVec;
 use std::{
-    collections::BTreeMap,
-    error::Error,
-    sync::{
+    collections::BTreeMap, error::Error, sync::{
         atomic::{AtomicU64, Ordering},
         Arc,
-    },
+    }
 };
 use ustr::UstrMap;
 
@@ -134,7 +132,7 @@ fn main() {
             .collect::<FxHashMap<_, _>>();
 
         for flow in seq_flows.values() {
-            flow.schedule().borrow_mut().start_offset = start;
+            flow.start_offset.store(start, Ordering::Relaxed);
 
             for route @ (hop, next_hop) in &flow.routes {
                 pre_graph.add_edge(link_id[hop], link_id[next_hop], Route { id: *route });
@@ -273,9 +271,11 @@ fn main() {
         OutputType::Console => {
             for (name, flow) in flows {
                 println!("Flow {}", name);
-                for ((from, to), offset) in &flow.schedule().borrow().link_offsets {
+                flow.link_offsets.iter().for_each(|entry| {
+                    let (from, to) = entry.key();
+                    let offset = entry.value();
                     println!("\t{} -> {}: {}", from, to, offset);
-                }
+                });
             }
         }
     }

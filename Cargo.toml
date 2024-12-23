@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 # 性能测试请启用如下编译选项 
-#
+
 # [profile.release]
 # codegen-units = 1
 # lto = "fat"
@@ -25,3 +25,4 @@ json5 = "0.4"
 rayon = "1.10"
 regex = "1.11"
 indexmap = "2.7"
+dashmap = "6.1"

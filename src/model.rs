@@ -42,7 +42,7 @@ pub fn init_processed_input() -> &'static mut ProcessedInput {
 #[derive(Debug, Clone, Copy)]
 pub struct Device {
     // pub id: Ustr,
-    pub pdelay: u64,
+    pub pdelay: u32,
     pub end_device: bool,
 }
 
@@ -90,8 +90,7 @@ impl<'a> AsRef<Flow<'a>> for Flow<'a> {
 impl<'a> Flow<'a> {
     #[inline]
     pub fn schedule_done(&self) -> bool {
-        self.schedule_done
-            .load(std::sync::atomic::Ordering::Relaxed)
+        self.schedule_done.load(Ordering::Relaxed)
     }
 
     #[inline]
@@ -106,7 +105,7 @@ impl<'a> Flow<'a> {
 
     #[inline]
     pub fn link_offset(&self, link_id: &(Ustr, Ustr)) -> u64 {
-        self.link_offsets.get(link_id).unwrap().clone()
+        *self.link_offsets.get(link_id).unwrap()
     }
 
     pub fn calculate_urgency(&self, link: &'a Link) -> Option<u64> {
@@ -126,7 +125,7 @@ impl<'a> Flow<'a> {
 
     #[inline]
     pub fn pdelay(&self, link: &'a Link) -> u64 {
-        link.from.pdelay
+        link.from.pdelay as u64
     }
 
     #[inline]
@@ -160,9 +159,9 @@ impl<'a> Flow<'a> {
         let earliest = self.accdelay(link) + self.pdelay(link);
 
         // 获取当前链路已经完成调度的流
-        let prevs = flows
+        let prevs: SmallVec<[_; 64]> = flows
             .filter(|f| f.as_ref().scheduled_link(link))
-            .collect::<Vec<_>>();
+            .collect();
 
         // 计算宏周期
         let max_time = lcm(
@@ -171,7 +170,7 @@ impl<'a> Flow<'a> {
         );
 
         // 计算已占用时间槽列表
-        let mut occupied = vec![(max_time, max_time)];
+        let mut occupied: SmallVec<[_; 512]> = SmallVec::from_slice(&[(max_time, max_time)]);
         let mut earliest_occupied = false;
 
         for prev in &prevs {
@@ -208,12 +207,10 @@ impl<'a> Flow<'a> {
         let found = possible_starts
             .par_iter()
             .filter_map(|&start| {
-                let mut slots = Vec::with_capacity((max_time / self.period) as usize);
-                slots.extend(
-                    (0..max_time / self.period)
-                        .map(|i| i * self.period + start)
-                        .map(|start| (start, start + self.tdelay(link))),
-                );
+                let slots: SmallVec<[_; 128]> = (0..max_time / self.period)
+                    .map(|i| i * self.period + start)
+                    .map(|start| (start, start + self.tdelay(link)))
+                    .collect();
                 match conflict_with(&slots, &occupied) {
                     true => None,
                     false => Some(start),
@@ -250,10 +247,10 @@ impl<'a> Flow<'a> {
         let mut out_degree: UstrMap<usize> = Default::default();
 
         // 构建入边映射和出度映射
-        for edge @ (from, to) in &graph {
-            in_edges.entry(to.clone()).or_default().push(edge.clone());
-            out_degree.entry(to.clone()).or_default();
-            *out_degree.entry(from.clone()).or_default() += 1;
+        for &edge @ (from, to) in &graph {
+            in_edges.entry(to).or_default().push(edge);
+            out_degree.entry(to).or_default();
+            *out_degree.entry(from).or_default() += 1;
         }
 
         // 初始化结果映射和待处理边集
@@ -289,7 +286,7 @@ impl<'a> Flow<'a> {
                             .max()
                             .unwrap_or(0);
                         result.insert(
-                            edge.clone(),
+                            *edge,
                             prev + self.pdelay(&link) + self.tdelay(&link) + self.ldelay(&link),
                         );
 
@@ -302,7 +299,7 @@ impl<'a> Flow<'a> {
 
                             // 如果起始节点出度变为0，加入下一轮处理
                             if *degree == 0 {
-                                zero_out_nodes.push(edge.0.clone());
+                                zero_out_nodes.push(edge.0);
                             }
                         }
                     }
@@ -310,7 +307,7 @@ impl<'a> Flow<'a> {
             }
 
             if zero_out_nodes.is_empty() && !remaining_edges.is_empty() {
-                zero_out_nodes = remaining_edges.iter().map(|edge| edge.0.clone()).collect();
+                zero_out_nodes = remaining_edges.iter().map(|edge| edge.0).collect();
             }
         }
 

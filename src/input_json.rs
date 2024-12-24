@@ -30,7 +30,7 @@ pub struct Flow {
 #[derive(Deserialize, Debug)]
 pub struct Device {
     pub name: Ustr,
-    pub pdelay: u64,
+    pub pdelay: u32,
     pub links: Vec<Link>,
     #[serde(rename = "type")]
     pub device_type: Ustr, // "end" or "switch"

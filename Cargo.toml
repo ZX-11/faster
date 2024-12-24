@@ -10,8 +10,6 @@ edition = "2021"
 # lto = "fat"
 # panic = "abort"
 # strip = "symbols"
-# [build]
-# rustflags = ["-C", "target-cpu=native"]
 
 [dependencies]
 petgraph = "0.6.5"

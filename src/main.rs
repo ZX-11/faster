@@ -3,22 +3,27 @@ extern crate derive_deref;
 
 use fxhash::{FxHashMap, FxHashSet};
 use model::{Network, PreGraph, ProcessedInput, Route};
-use petgraph::{algo::{is_cyclic_directed, tarjan_scc}, graph::EdgeIndex, visit::EdgeRef, Graph};
+use petgraph::{
+    algo::{is_cyclic_directed, tarjan_scc},
+    prelude::StableGraph,
+    visit::EdgeRef,
+};
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use smallvec::SmallVec;
 use std::{collections::BTreeMap, error::Error, sync::atomic::Ordering};
 use ustr::UstrMap;
 
+mod input_fast;
 mod input_inet;
 mod input_json;
 mod model;
 mod output_inet;
 
 const END_BREAKLOOP: bool = false;
-
 enum InputType<'a> {
     Inet(&'a str, &'a str),
     Json(&'a str),
+    Fast(&'a str, &'a str, &'a str),
 }
 enum OutputType<'a> {
     Inet(&'a str),
@@ -47,9 +52,20 @@ fn parse_args<'a>(
                 let file = args.next().ok_or("Missing input file for --input-json")?;
                 input_type = Some(InputType::Json(file));
             }
+            "--input-fast" => {
+                input_type = Some(InputType::Fast(
+                    args.next().ok_or("Missing device file for --input-fast")?,
+                    args.next().ok_or("Missing flow file for --input-fast")?,
+                    args.next()
+                        .ok_or("Missing flowlink file for --input-fast")?,
+                ));
+            }
             "--output-inet" => {
                 let file = args.next().ok_or("Missing output file for --output-inet")?;
-                output_type = Some(OutputType::Inet(file));
+                match input_type {
+                    Some(InputType::Inet(_, _)) => output_type = Some(OutputType::Inet(file)),
+                    _ => return Err("--input-inet must be specified before --output-inet".into()),
+                }
             }
             "--output-console" => {
                 output_type = Some(OutputType::Console);
@@ -67,9 +83,13 @@ fn parse_args<'a>(
 fn main() {
     let args: SmallVec<[String; 8]> = std::env::args().collect();
 
-    let (input_type, output_type) = parse_args(args.iter().map(AsRef::as_ref).skip(1)).unwrap();
+    let (input_type, output_type) = parse_args(args.iter().map(AsRef::as_ref).skip(1))
+        .unwrap_or_else(|e| {
+            eprintln!("Arguement error:\n\t{}", e);
+            std::process::exit(1);
+        });
 
-    let processed_input @ ProcessedInput {
+    let ProcessedInput {
         devices,
         links,
         flows,
@@ -77,6 +97,7 @@ fn main() {
     } = match input_type {
         InputType::Inet(filename, sequence) => input_inet::process(filename, sequence),
         InputType::Json(filename) => input_json::process(filename),
+        InputType::Fast(device, flow, flowlink) => input_fast::process(device, flow, flowlink),
     };
 
     let mut flow_sequence: BTreeMap<u32, UstrMap<_>> = BTreeMap::new();
@@ -119,17 +140,24 @@ fn main() {
             .map(|(id, ln)| (*id, pre_graph.add_node(ln)))
             .collect::<FxHashMap<_, _>>();
 
-        let mut routes = FxHashMap::default();
+        let mut route_id = FxHashMap::default();
+        let mut route_flows = FxHashMap::default();
 
         for flow in seq_flows.values() {
             // 为流设置最早起始时间
             flow.start_offset.store(start_offset, Ordering::Relaxed);
 
             for route @ (hop, next_hop) in &flow.routes {
-                pre_graph.add_edge(link_id[hop], link_id[next_hop], Route { id: *route });
+                route_id.insert(
+                    (flow.id, *route),
+                    pre_graph.add_edge(link_id[hop], link_id[next_hop], Route { id: *route }),
+                );
 
                 // 映射路由到网络流量序列
-                routes.entry(route).or_insert_with(Vec::new).push(flow);
+                route_flows
+                    .entry(*route)
+                    .or_insert_with(Vec::new)
+                    .push(*flow);
             }
         }
 
@@ -149,25 +177,28 @@ fn main() {
                 .collect();
 
             if queue.is_empty() {
-                println!("breakloop");
                 if END_BREAKLOOP {
                     let mut urgency = Vec::with_capacity(seq_flows.len());
-                    urgency.extend(seq_flows
-                        .values()
-                        .filter(|flow| !flow.schedule_done())
-                        .map(|&flow| (flow, flow.calculate_urgency(flow.first_unscheduled_link()).unwrap()))
-                    );
+                    urgency.extend(seq_flows.values().filter(|flow| !flow.schedule_done()).map(
+                        |&flow| {
+                            (
+                                flow,
+                                flow.calculate_urgency(flow.first_unscheduled_link())
+                                    .unwrap(),
+                            )
+                        },
+                    ));
                     urgency.sort_unstable_by_key(|(_, urgency)| *urgency);
 
                     while is_cyclic_directed(&pre_graph.graph) {
                         // 选择紧急度最低的流进行破环
                         let blp @ (flow, _) = urgency.pop().unwrap();
-    
+
                         // 记录被破环的流
                         breakloop.push(blp);
-    
+
                         // 执行破环
-                        pre_graph.breakloop(flow);
+                        pre_graph.breakloop(flow, &route_id);
                     }
                 } else {
                     // 循环直到图中没有环
@@ -177,10 +208,7 @@ fn main() {
                         flow_to_cycle_edge_count.reserve(seq_flows.len());
 
                         for edge in &cycle_edges {
-                            for flow in routes[&pre_graph.edge_weight(*edge).unwrap().id]
-                                .iter()
-                                .filter(|f| !f.breakloop())
-                            {
+                            for flow in route_flows[edge].iter().filter(|f| !f.breakloop()) {
                                 *flow_to_cycle_edge_count.entry(flow.id).or_insert(0u32) += 1;
                             }
                         }
@@ -200,7 +228,7 @@ fn main() {
                         ));
 
                         // 执行破环操作
-                        pre_graph.breakloop(flow);
+                        pre_graph.breakloop(flow, &route_id);
                     }
 
                     breakloop.sort_unstable_by_key(|(_, urgency)| *urgency);
@@ -258,12 +286,7 @@ fn main() {
 
                 // 移除已处理的节点
                 for link in &queue {
-                    for node in pre_graph.node_indices() {
-                        if pre_graph[node].id == link.id {
-                            pre_graph.remove_node(node);
-                            break;
-                        }
-                    }
+                    pre_graph.remove_node(link_id[&link.id]);
                 }
             }
         }
@@ -272,24 +295,22 @@ fn main() {
             // 按照紧急程度调度
             for (f, _) in breakloop.iter().rev() {
                 for link in f.links.values().filter(|l| !f.scheduled_link(l)) {
-                    start_offset = start_offset.max(
-                        if no_seq {
-                            f.schedule_link(flows.values(), link)
-                        } else {
-                            f.schedule_link(seq_flows.values(), link)
-                        }
-                    );
+                    start_offset = start_offset.max(if no_seq {
+                        f.schedule_link(flows.values(), link)
+                    } else {
+                        f.schedule_link(seq_flows.values(), link)
+                    });
                 }
             }
         }
     }
 
     match output_type {
-        OutputType::Inet(filename) => output_inet::output(&processed_input, filename),
+        OutputType::Inet(filename) => output_inet::output(filename),
         OutputType::Console => {
             for (name, flow) in flows {
                 println!("Flow {}", name);
-                for entry in  &flow.link_offsets {
+                for entry in &flow.link_offsets {
                     let (from, to) = entry.key();
                     let offset = entry.value();
                     println!("\t{} -> {}: {}", from, to, offset);
@@ -299,15 +320,15 @@ fn main() {
     }
 }
 
-fn find_cycle_edges(graph: &Graph<&model::Link, Route>) -> Option<FxHashSet<EdgeIndex>> {
+fn find_cycle_edges(graph: &StableGraph<&model::Link, Route>) -> Option<FxHashSet<model::RouteID>> {
     let sccs = tarjan_scc(graph); // 使用 Tarjan 算法找到所有强连通分量
     let mut cycle_edges = FxHashSet::default();
 
     for scc in sccs.into_iter().filter(|scc| scc.len() > 1) {
         for &node_i in &scc {
-            for (edge, node_j) in graph.edges(node_i).map(|e| (e.id(), e.target())) {
+            for node_j in graph.edges(node_i).map(|e| e.target()) {
                 if scc.contains(&node_j) {
-                    cycle_edges.insert(edge);
+                    cycle_edges.insert((graph[node_i].id, graph[node_j].id));
                 }
             }
         }

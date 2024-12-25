@@ -43,6 +43,12 @@ cargo build --release
 ./faster --input-inet <input-file> [--sequence <sequence-file>] --output-inet <output-file>
 ```
 
+### FAST 输入模式
+
+```bash
+./faster --input-fast <device-txt> <flow-txt> <flowlink-txt> --output-console
+```
+
 ## 输入格式
 
 ### JSON 格式

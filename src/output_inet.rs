@@ -7,7 +7,7 @@ use ustr::{Ustr, UstrMap};
 
 use crate::{
     input_inet::{self, TIME_SCALE},
-    model::ProcessedInput,
+    model::processed_input,
 };
 
 #[derive(Serialize, Debug, Copy, Clone)]
@@ -59,9 +59,10 @@ struct Output {
     switches: Vec<Switch>,
 }
 
-pub fn output(processed_input: &ProcessedInput, filename: &str) {
-    // 重新获取原始配置
-    let input = processed_input
+pub fn output(filename: &str) {
+    let p = processed_input();
+
+    let input = p
         .addition
         .as_ref()
         .unwrap()
@@ -75,7 +76,7 @@ pub fn output(processed_input: &ProcessedInput, filename: &str) {
 
     // 处理流信息
     for original_flow in &input.flows {
-        let model_flow = &processed_input.flows[&original_flow.name];
+        let model_flow = &p.flows[&original_flow.name];
         let first_sending_time = model_flow
             .link_offsets
             .iter()
@@ -121,7 +122,7 @@ pub fn output(processed_input: &ProcessedInput, filename: &str) {
             // 遍历流并收集端口调度信息
             for flow in input.flows.iter().filter(|f| f.hop_set.contains(&link_id)) {
                 // 获取流的调度信息
-                let model_flow = &processed_input.flows[&flow.name];
+                let model_flow = &p.flows[&flow.name];
                 let offset = model_flow.link_offset(&link_id);
                 priority_slots
                     .entry(flow.priority_value)
@@ -217,7 +218,7 @@ pub fn output(processed_input: &ProcessedInput, filename: &str) {
         });
     }
 
-    let flow_period: UstrMap<u64> = processed_input.flows.iter().map(|(name, flow)| (*name, flow.period)).collect();
+    let flow_period: UstrMap<u64> = p.flows.iter().map(|(name, flow)| (*name, flow.period)).collect();
 
     output_file(serde_json::to_string_pretty, &output, filename).unwrap();
     output_file(serde_json::to_string_pretty, &flow_offset, "flow-offset.json").unwrap();

@@ -1,5 +1,5 @@
 use fxhash::{FxBuildHasher, FxHashMap, FxHashSet};
-use petgraph::Graph;
+use petgraph::{prelude::{StableGraph, EdgeIndex}, Graph};
 use rayon::prelude::*;
 use smallvec::SmallVec;
 use std::{
@@ -13,6 +13,10 @@ use ustr::{Ustr, UstrMap};
 type FxIndexMap<K, V> = indexmap::IndexMap<K, V, FxBuildHasher>;
 type FxDashMap<K, V> = dashmap::DashMap<K, V, FxBuildHasher>;
 
+pub type FlowID = Ustr;
+pub type LinkID = (Ustr, Ustr);
+pub type RouteID = ((Ustr, Ustr), (Ustr, Ustr));
+
 #[derive(Default)]
 pub struct ProcessedInput {
     pub devices: UstrMap<Device>,
@@ -24,20 +28,21 @@ pub struct ProcessedInput {
 static mut PROCESSED_INPUT: Option<ProcessedInput> = None;
 
 // 这个函数只能被调用一次，用于读取输入，示例用法见input_json.rs
-#[allow(static_mut_refs)]
 pub fn init_processed_input() -> &'static mut ProcessedInput {
     unsafe {
-        assert!(PROCESSED_INPUT.is_none());
-        PROCESSED_INPUT = Some(ProcessedInput::default());
-        PROCESSED_INPUT.as_mut().unwrap_unchecked()
+        let p = &mut *&raw mut PROCESSED_INPUT;
+        assert!(p.is_none());
+        *p = Some(ProcessedInput::default());
+        p.as_mut().unwrap_unchecked()
     }
 }
 
-// 调用前必须已经调用init_processed_input()，通常没有必要调用，留一个实现备用
-// #[allow(static_mut_refs)]
-// pub fn processed_input() -> &'static ProcessedInput {
-//     unsafe { PROCESSED_INPUT.as_ref().unwrap() }
-// }
+// 调用前必须已经调用init_processed_input()
+pub fn processed_input() -> &'static ProcessedInput {
+    unsafe {
+        (&*&raw const PROCESSED_INPUT).as_ref().unwrap()
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct Device {
@@ -48,16 +53,17 @@ pub struct Device {
 
 #[derive(Debug)]
 pub struct Link {
-    pub id: (Ustr, Ustr),
+    pub id: LinkID,
     pub from: Device,
     pub _to: Device,
     pub delay: u32,
     pub speed: u32,
-    pub flows: Vec<Ustr>,
+    pub flows: Vec<FlowID>,
 }
 
+#[allow(dead_code)]
 pub struct Route {
-    pub id: ((Ustr, Ustr), (Ustr, Ustr)),
+    pub id: RouteID,
 }
 
 #[derive(Debug, Default)]
@@ -72,7 +78,7 @@ pub struct Flow<'a> {
     pub links: FxIndexMap<(Ustr, Ustr), &'a Link>, // 保持插入顺序的哈希表
     pub predecessors: FxHashMap<(Ustr, Ustr), Vec<(Ustr, Ustr)>>,
     pub remain_min_delay: FxHashMap<(Ustr, Ustr), u64>,
-    pub routes: Vec<((Ustr, Ustr), (Ustr, Ustr))>,
+    pub routes: Vec<RouteID>,
 
     // 调度状态
     pub link_offsets: FxDashMap<(Ustr, Ustr), u64>,
@@ -352,22 +358,19 @@ pub struct Network<'a> {
 
 #[derive(Deref, DerefMut, Default)]
 pub struct PreGraph<'a> {
-    pub graph: Graph<&'a Link, Route>,
+    pub graph: StableGraph<&'a Link, Route>,
 }
 
 impl<'a> PreGraph<'a> {
     /// 移除指定流的所有路由边，并标记该流为破环状态
-    pub fn breakloop(&mut self, flow: &Flow) {
+    pub fn breakloop(&mut self, flow: &Flow, route_id: &FxHashMap<(FlowID, RouteID), EdgeIndex>) {
         // 标记流为破环状态
         flow.breakloop.store(true, Ordering::Relaxed);
 
-        // 使用 retain 方法保留不需要删除的边
-        self.graph.retain_edges(|graph, edge_idx| {
-            graph
-                .edge_weight(edge_idx)
-                .map(|r| !flow.routes.contains(&r.id))
-                .unwrap_or(true)
-        });
+        // 移除流的所有路由边
+        for route in flow.routes.iter() {
+            self.graph.remove_edge(route_id[&(flow.id, *route)]);
+        }
 
         // 移除孤立的节点
         self.remove_isolated_nodes();

@@ -30,7 +30,7 @@ static mut PROCESSED_INPUT: Option<ProcessedInput> = None;
 // 这个函数只能被调用一次，用于读取输入，示例用法见input_json.rs
 pub fn init_processed_input() -> &'static mut ProcessedInput {
     unsafe {
-        let p = &mut *&raw mut PROCESSED_INPUT;
+        let p = &mut *std::ptr::addr_of_mut!(PROCESSED_INPUT);
         assert!(p.is_none());
         *p = Some(ProcessedInput::default());
         p.as_mut().unwrap_unchecked()
@@ -40,7 +40,7 @@ pub fn init_processed_input() -> &'static mut ProcessedInput {
 // 调用前必须已经调用init_processed_input()
 pub fn processed_input() -> &'static ProcessedInput {
     unsafe {
-        (&*&raw const PROCESSED_INPUT).as_ref().unwrap()
+        (&*std::ptr::addr_of!(PROCESSED_INPUT)).as_ref().unwrap()
     }
 }
 

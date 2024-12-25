@@ -18,7 +18,7 @@ FASTER 是一个用 Rust 实现的高性能 TSN 时间触发业务流快速调�
 replace-with = 'tuna'
 
 [source.tuna]
-registry = "https://mirrors.tuna.tsinghua.edu.cn/git/crates.io-index.git"
+registry = "sparse+https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/"
 ```
 ### 编译
 

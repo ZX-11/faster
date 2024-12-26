@@ -5,12 +5,12 @@ use ustr::{ustr, Ustr, UstrMap};
 
 use crate::model::{self, init_processed_input, ProcessedInput};
 
-lazy_static!{
+lazy_static! {
     pub static ref TIME_SCALE: UstrMap<u64> = UstrMap::from_iter([
         (ustr("ns"), 1),
         (ustr("us"), 1000),
         (ustr("ms"), 1000_000),
-        (ustr("s"),  1000_000_000),
+        (ustr("s"), 1000_000_000),
     ]);
 }
 
@@ -90,10 +90,13 @@ type Sequence = UstrMap<u32>;
 
 fn get_sequence(seq: &Sequence, id: Ustr) -> u32 {
     match seq.get(&id) {
-        Some(&s) =>s,
+        Some(&s) => s,
         _ => {
             for (pat, s) in seq {
-                if regex::Regex::new(pat.as_str()).unwrap().is_match(id.as_str()) {
+                if regex::Regex::new(pat.as_str())
+                    .unwrap()
+                    .is_match(id.as_str())
+                {
                     return *s;
                 }
             }
@@ -106,7 +109,7 @@ pub fn process((filename, sequence): (&str, &str)) -> &'static ProcessedInput {
     let mut input: Config = json5::from_str(&std::fs::read_to_string(filename).unwrap()).unwrap();
     let seq: Sequence = match sequence {
         "" => Default::default(),
-        _ => serde_json::from_slice(&std::fs::read(sequence).unwrap()).unwrap()
+        _ => serde_json::from_slice(&std::fs::read(sequence).unwrap()).unwrap(),
     };
     let p = init_processed_input();
 
@@ -214,28 +217,10 @@ pub fn process((filename, sequence): (&str, &str)) -> &'static ProcessedInput {
     p.flows = input
         .flows
         .iter()
-        .map(|f| {
-            match &f.hops {
-                Hops::SingleLevel(_) => {
-                    let (sorted_hops, predecessors) = model::sort_hops(&f.hop_set);
-                    (
-                        f.name,
-                        model::Flow {
-                            id: f.name,
-                            length: f.packet_size / if f.packet_size_unit == "bit" { 8 } else { 1 },
-                            period: f.packet_periodicity * TIME_SCALE[&f.packet_periodicity_unit],
-                            max_latency: f.hard_constraint_time
-                                * TIME_SCALE[&f.hard_constraint_time_unit],
-                            sequence: get_sequence(&seq, f.name),
-                            links: sorted_hops.iter().map(|h| (*h, &p.links[h])).collect(),
-                            predecessors,
-                            ..Default::default()
-                        }
-                        .generate_remain_min_delay(&p.links)
-                        .generate_routes(),
-                    )
-                }
-                Hops::MultiLevel(hops) => (
+        .map(|f| match &f.hops {
+            Hops::SingleLevel(_) => {
+                let (sorted_hops, predecessors) = model::sort_hops(&f.hop_set);
+                (
                     f.name,
                     model::Flow {
                         id: f.name,
@@ -244,52 +229,67 @@ pub fn process((filename, sequence): (&str, &str)) -> &'static ProcessedInput {
                         max_latency: f.hard_constraint_time
                             * TIME_SCALE[&f.hard_constraint_time_unit],
                         sequence: get_sequence(&seq, f.name),
-                        links: hops
-                            .iter()
-                            .flat_map(|level| {
-                                level.iter().map(|h| {
-                                    (
-                                        (h.current_node_name, h.next_node_name),
-                                        &p.links[&(h.current_node_name, h.next_node_name)],
-                                    )
-                                })
-                            })
-                            .collect(),
-                        predecessors: {
-                            let mut result: FxHashMap<(Ustr, Ustr), Vec<(Ustr, Ustr)>> =
-                                FxHashMap::default();
-                            for level in hops.iter() {
-                                for hop in level.windows(2) {
-                                    result
-                                        .entry((hop[1].current_node_name, hop[1].next_node_name))
-                                        .or_default()
-                                        .push((hop[0].current_node_name, hop[0].next_node_name));
-                                }
-                            }
-                            result
-                        },
-                        routes: {
-                            let mut result: Vec<((Ustr, Ustr), (Ustr, Ustr))> = Vec::new();
-                            for level in hops.iter() {
-                                for hop in level.windows(2) {
-                                    assert_eq!(hop[0].next_node_name, hop[1].current_node_name);
-                                    result.push((
-                                        (hop[0].current_node_name, hop[0].next_node_name),
-                                        (hop[1].current_node_name, hop[1].next_node_name),
-                                    ));
-                                }
-                            }
-                            result
-                        },
+                        links: sorted_hops.iter().map(|h| (*h, &p.links[h])).collect(),
+                        predecessors,
                         ..Default::default()
                     }
-                    .generate_remain_min_delay(&p.links),
-                ),
+                    .generate_remain_min_delay(&p.links)
+                    .generate_routes(),
+                )
             }
+            Hops::MultiLevel(hops) => (
+                f.name,
+                model::Flow {
+                    id: f.name,
+                    length: f.packet_size / if f.packet_size_unit == "bit" { 8 } else { 1 },
+                    period: f.packet_periodicity * TIME_SCALE[&f.packet_periodicity_unit],
+                    max_latency: f.hard_constraint_time * TIME_SCALE[&f.hard_constraint_time_unit],
+                    sequence: get_sequence(&seq, f.name),
+                    links: hops
+                        .iter()
+                        .flat_map(|level| {
+                            level.iter().map(|h| {
+                                (
+                                    (h.current_node_name, h.next_node_name),
+                                    &p.links[&(h.current_node_name, h.next_node_name)],
+                                )
+                            })
+                        })
+                        .collect(),
+                    predecessors: {
+                        let mut result: FxHashMap<model::LinkID, Vec<model::LinkID>> =
+                            FxHashMap::default();
+                        for level in hops.iter() {
+                            for hop in level.windows(2) {
+                                result
+                                    .entry((hop[1].current_node_name, hop[1].next_node_name))
+                                    .or_default()
+                                    .push((hop[0].current_node_name, hop[0].next_node_name));
+                            }
+                        }
+                        result
+                    },
+                    routes: {
+                        let mut result: Vec<model::RouteID> = Vec::new();
+                        for level in hops.iter() {
+                            for hop in level.windows(2) {
+                                assert_eq!(hop[0].next_node_name, hop[1].current_node_name);
+                                result.push((
+                                    (hop[0].current_node_name, hop[0].next_node_name),
+                                    (hop[1].current_node_name, hop[1].next_node_name),
+                                ));
+                            }
+                        }
+                        result
+                    },
+                    ..Default::default()
+                }
+                .generate_remain_min_delay(&p.links),
+            ),
         })
         .collect();
 
     p.addition = Some(Box::new(input));
-    
+
     return p;
 }

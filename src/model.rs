@@ -17,12 +17,12 @@ type FxDashMap<K, V> = dashmap::DashMap<K, V, FxBuildHasher>;
 
 pub type FlowID = Ustr;
 pub type LinkID = (Ustr, Ustr);
-pub type RouteID = ((Ustr, Ustr), (Ustr, Ustr));
+pub type RouteID = (LinkID, LinkID);
 
 #[derive(Default)]
 pub struct ProcessedInput {
     pub devices: UstrMap<Device>,
-    pub links: FxHashMap<(Ustr, Ustr), Link>,
+    pub links: FxHashMap<LinkID, Link>,
     pub flows: UstrMap<Flow<'static>>,
     pub addition: Option<Box<dyn Any>>,
 }
@@ -75,13 +75,13 @@ pub struct Flow<'a> {
     pub sequence: u32,
 
     // 拓扑相关
-    pub links: FxIndexMap<(Ustr, Ustr), &'a Link>, // 保持插入顺序的哈希表
-    pub predecessors: FxHashMap<(Ustr, Ustr), Vec<(Ustr, Ustr)>>,
-    pub remain_min_delay: FxHashMap<(Ustr, Ustr), u64>,
+    pub links: FxIndexMap<LinkID, &'a Link>, // 保持插入顺序的哈希表
+    pub predecessors: FxHashMap<LinkID, Vec<LinkID>>,
+    pub remain_min_delay: FxHashMap<LinkID, u64>,
     pub routes: Vec<RouteID>,
 
     // 调度状态
-    pub link_offsets: FxDashMap<(Ustr, Ustr), u64>,
+    pub link_offsets: FxDashMap<LinkID, u64>,
     pub start_offset: AtomicU64,
     pub schedule_done: AtomicBool,
     pub breakloop: AtomicBool,
@@ -110,7 +110,7 @@ impl<'a> Flow<'a> {
     }
 
     #[inline]
-    pub fn link_offset(&self, link_id: &(Ustr, Ustr)) -> u64 {
+    pub fn link_offset(&self, link_id: &LinkID) -> u64 {
         *self.link_offsets.get(link_id).unwrap()
     }
 
@@ -244,10 +244,10 @@ impl<'a> Flow<'a> {
         }
     }
 
-    pub fn generate_remain_min_delay(mut self, links: &FxHashMap<(Ustr, Ustr), Link>) -> Self {
+    pub fn generate_remain_min_delay(mut self, links: &FxHashMap<LinkID, Link>) -> Self {
         // 预构建入边映射和出度映射
         let graph = self.links.values().map(|l| l.id).collect::<Vec<_>>();
-        let mut in_edges: UstrMap<SmallVec<[(Ustr, Ustr); 16]>> = Default::default();
+        let mut in_edges: UstrMap<SmallVec<[LinkID; 16]>> = Default::default();
         let mut out_degree: UstrMap<usize> = Default::default();
 
         // 构建入边映射和出度映射
@@ -258,8 +258,8 @@ impl<'a> Flow<'a> {
         }
 
         // 初始化结果映射和待处理边集
-        let mut result: FxHashMap<(Ustr, Ustr), u64> = Default::default();
-        let mut remaining_edges: FxHashSet<(Ustr, Ustr)> = graph.iter().cloned().collect();
+        let mut result: FxHashMap<LinkID, u64> = Default::default();
+        let mut remaining_edges: FxHashSet<LinkID> = graph.iter().cloned().collect();
 
         // 找出出度为0的节点队列
         let mut zero_out_nodes: SmallVec<[Ustr; 32]> = out_degree
@@ -324,7 +324,7 @@ impl<'a> Flow<'a> {
             return self;
         }
 
-        let mut end_map: UstrMap<SmallVec<[(Ustr, Ustr); 16]>> = Default::default();
+        let mut end_map: UstrMap<SmallVec<[LinkID; 16]>> = Default::default();
 
         for hop in self.links.values().map(|l| l.id) {
             end_map.entry(hop.0).or_default().push(hop);
@@ -447,15 +447,15 @@ fn conflict_with(slots: &[(u64, u64)], occupied: &[(u64, u64)]) -> bool {
 }
 
 pub fn sort_hops(
-    hops: &FxHashSet<(Ustr, Ustr)>,
+    hops: &FxHashSet<LinkID>,
 ) -> (
-    Vec<(Ustr, Ustr)>,
-    FxHashMap<(Ustr, Ustr), Vec<(Ustr, Ustr)>>,
+    Vec<LinkID>,
+    FxHashMap<LinkID, Vec<LinkID>>,
 ) {
     // 构建图的邻接表和入度表
     let mut adjacency_list: UstrMap<Vec<Ustr>> = Default::default();
     let mut in_degree: UstrMap<usize> = Default::default();
-    let mut predecessors: FxHashMap<(Ustr, Ustr), Vec<(Ustr, Ustr)>> = Default::default();
+    let mut predecessors: FxHashMap<LinkID, Vec<LinkID>> = Default::default();
 
     for &(from, to) in hops {
         adjacency_list.entry(from).or_insert_with(Vec::new).push(to);

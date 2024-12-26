@@ -194,7 +194,7 @@ impl<'a> Flow<'a> {
             occupied.push((earliest, earliest));
         }
 
-        occupied.sort();
+        occupied.sort_unstable();
 
         let possible_starts: FxHashSet<_> = occupied
             .windows(2)

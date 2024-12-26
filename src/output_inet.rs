@@ -242,7 +242,7 @@ fn merge_slots(mut slots_data: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
     if slots_data.len() <= 1 {
         return slots_data;
     }
-    slots_data.sort_by_key(|&(start, _)| start);
+    slots_data.sort_unstable_by_key(|&(start, _)| start);
 
     let mut w = 0;
 

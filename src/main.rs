@@ -2,6 +2,7 @@
 extern crate derive_deref;
 
 use fxhash::{FxHashMap, FxHashSet};
+use input::*;
 use model::{Network, PreGraph, ProcessedInput, Route};
 use petgraph::{
     algo::{is_cyclic_directed, tarjan_scc},
@@ -10,82 +11,21 @@ use petgraph::{
 };
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use smallvec::SmallVec;
-use std::{collections::BTreeMap, error::Error, sync::atomic::Ordering};
+use std::{collections::BTreeMap, sync::atomic::Ordering};
 use ustr::UstrMap;
 
-mod input_fast;
-mod input_inet;
-mod input_json;
+mod input;
 mod model;
 mod output_inet;
 
 const END_BREAKLOOP: bool = false;
-enum InputType<'a> {
-    Inet(&'a str, &'a str),
-    Json(&'a str),
-    Fast(&'a str, &'a str, &'a str),
-}
-enum OutputType<'a> {
-    Inet(&'a str),
-    Console,
-}
-
-fn parse_args<'a>(
-    mut args: impl Iterator<Item = &'a str>,
-) -> Result<(InputType<'a>, OutputType<'a>), Box<dyn Error>> {
-    let mut input_type = None;
-    let mut output_type = None;
-    while let Some(arg) = args.next() {
-        match arg {
-            "--input-inet" => {
-                let file = args.next().ok_or("Missing input file for --input-inet")?;
-                input_type = Some(InputType::Inet(file, ""));
-            }
-            "--sequence" => {
-                let seq = args.next().ok_or("Missing sequence for --sequence")?;
-                input_type = match input_type {
-                    Some(InputType::Inet(file, _)) => Some(InputType::Inet(file, seq)),
-                    _ => return Err("--sequence can only be used with --input-inet".into()),
-                };
-            }
-            "--input-json" => {
-                let file = args.next().ok_or("Missing input file for --input-json")?;
-                input_type = Some(InputType::Json(file));
-            }
-            "--input-fast" => {
-                input_type = Some(InputType::Fast(
-                    args.next().ok_or("Missing device file for --input-fast")?,
-                    args.next().ok_or("Missing flow file for --input-fast")?,
-                    args.next()
-                        .ok_or("Missing flowlink file for --input-fast")?,
-                ));
-            }
-            "--output-inet" => {
-                let file = args.next().ok_or("Missing output file for --output-inet")?;
-                match input_type {
-                    Some(InputType::Inet(_, _)) => output_type = Some(OutputType::Inet(file)),
-                    _ => return Err("--input-inet must be specified before --output-inet".into()),
-                }
-            }
-            "--output-console" => {
-                output_type = Some(OutputType::Console);
-            }
-            arg => return Err(format!("Unknown argument: {}", arg).into()),
-        }
-    }
-
-    match (input_type, output_type) {
-        (Some(input), Some(output)) => Ok((input, output)),
-        _ => Err("Missing input or output type".into()),
-    }
-}
 
 fn main() {
     let args: SmallVec<[String; 8]> = std::env::args().collect();
 
     let (input_type, output_type) = parse_args(args.iter().map(AsRef::as_ref).skip(1))
         .unwrap_or_else(|e| {
-            eprintln!("Arguement error:\n\t{}", e);
+            eprintln!("Arguement error:\n\t{}\nUse --help for more information", e);
             std::process::exit(1);
         });
 
@@ -94,11 +34,7 @@ fn main() {
         links,
         flows,
         ..
-    } = match input_type {
-        InputType::Inet(filename, sequence) => input_inet::process(filename, sequence),
-        InputType::Json(filename) => input_json::process(filename),
-        InputType::Fast(device, flow, flowlink) => input_fast::process(device, flow, flowlink),
-    };
+    } = process_input!(input_type => { inet, json, fast });
 
     let mut flow_sequence: BTreeMap<u32, UstrMap<_>> = BTreeMap::new();
 

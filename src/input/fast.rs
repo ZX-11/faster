@@ -3,16 +3,12 @@ use ustr::{ustr, Ustr, UstrMap};
 
 use crate::model::*;
 
-pub fn process(
-    device_path: &str,
-    flow_path: &str,
-    flowlink_path: &str,
-) -> &'static ProcessedInput {
+pub fn process((device, flow, flowlink): (&str, &str, &str)) -> &'static ProcessedInput {
     let p = init_processed_input();
     let mut flow_hops: UstrMap<Vec<(Ustr, Ustr)>> = UstrMap::default();
     {
         // Process device.txt
-        let device_file = std::fs::read_to_string(device_path).unwrap();
+        let device_file = std::fs::read_to_string(device).unwrap();
         let mut lines = device_file.lines();
 
         // Network parameters
@@ -56,7 +52,7 @@ pub fn process(
     }
     {
         // Process flowlink.txt
-        let flowlink_file = std::fs::read_to_string(flowlink_path).unwrap();
+        let flowlink_file = std::fs::read_to_string(flowlink).unwrap();
 
         flow_hops.extend(flowlink_file.lines().enumerate().map(|(id, line)| {
             let nodes: SmallVec<[&str; 32]> = line.split_whitespace().collect();
@@ -78,7 +74,7 @@ pub fn process(
     }
     {
         // Process flow.txt
-        let flow_file = std::fs::read_to_string(flow_path).unwrap();
+        let flow_file = std::fs::read_to_string(flow).unwrap();
 
         for line in flow_file.lines().skip(1) {
             let parts: SmallVec<[&str; 8]> = line.split_whitespace().collect();

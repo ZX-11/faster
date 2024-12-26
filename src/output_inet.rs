@@ -6,7 +6,7 @@ use serde::Serialize;
 use ustr::{Ustr, UstrMap};
 
 use crate::{
-    input_inet::{self, TIME_SCALE},
+    input::inet::{Config, TIME_SCALE},
     model::processed_input,
 };
 
@@ -66,7 +66,7 @@ pub fn output(filename: &str) {
         .addition
         .as_ref()
         .unwrap()
-        .downcast_ref::<input_inet::Config>()
+        .downcast_ref::<Config>()
         .unwrap();
 
     let mut output = Output {

@@ -3,7 +3,6 @@ use petgraph::{
     prelude::{EdgeIndex, StableGraph},
     Graph,
 };
-use rayon::prelude::*;
 use smallvec::SmallVec;
 use std::{
     any::Any,
@@ -385,12 +384,14 @@ impl<'a> PreGraph<'a> {
     }
 }
 
-// 二分查找，时间复杂度为O(n log m)，由于m(occupied.len())通常较大，实际测试比双指针更快
-pub fn conflict_with(slots: &[(u64, u64)], occupied: &[(u64, u64)]) -> bool {
+// 二分查找，时间复杂度为O(n log m)
+// n = slots.len(), m = occupied.len()
+fn _conflict_with_1(slots: &[(u64, u64)], occupied: &[(u64, u64)]) -> bool {
     if occupied.is_empty() {
         return false;
     }
-    let conflict = |&(start, end)| {
+
+    slots.into_iter().any(|&(start, end)| {
         occupied
             .binary_search_by(|&(occupied_start, occupied_end)| match true {
                 _ if occupied_end <= start => std::cmp::Ordering::Less,
@@ -398,19 +399,11 @@ pub fn conflict_with(slots: &[(u64, u64)], occupied: &[(u64, u64)]) -> bool {
                 _ => std::cmp::Ordering::Equal,
             })
             .is_ok()
-    };
-
-    if slots.len() < 1024 {
-        // 串行处理
-        slots.into_iter().any(conflict)
-    } else {
-        // 并行处理
-        slots.into_par_iter().any(conflict)
-    }
+    })
 }
 
-// 使用双指针法检查冲突，时间复杂度为O(n + m)，实际测试更慢
-pub fn _conflict_with(slots: &[(u64, u64)], occupied: &[(u64, u64)]) -> bool {
+// 双指针法，时间复杂度为O(n + m)
+fn _conflict_with_2(slots: &[(u64, u64)], occupied: &[(u64, u64)]) -> bool {
     let mut i = 0;
     let mut j = 0;
 
@@ -422,6 +415,30 @@ pub fn _conflict_with(slots: &[(u64, u64)], occupied: &[(u64, u64)]) -> bool {
             i += 1;
         } else if e2 <= s1 {
             j += 1;
+        } else {
+            return true;
+        }
+    }
+    false
+}
+
+// 结合双指针和二分查找，时间复杂度为O(n + log m)
+fn conflict_with(slots: &[(u64, u64)], occupied: &[(u64, u64)]) -> bool {
+    let mut i = 0;
+    let mut j = 0;
+
+    while i < slots.len() && j < occupied.len() {
+        let (s1, e1) = unsafe { *slots.get_unchecked(i) };
+        let (s2, e2) = unsafe { *occupied.get_unchecked(j) };
+
+        if e1 <= s2 {
+            i += 1;
+        } else if e2 <= s1 {
+            // 使用二分查找找到第一个 occupied[k] 满足 occupied[k].start >= slots[i].start
+            j += match occupied[j + 1..].binary_search_by(|&(start, _)| start.cmp(&s1)) {
+                Ok(k) => 1 + k,
+                Err(k) => 1 + k,
+            };
         } else {
             return true;
         }

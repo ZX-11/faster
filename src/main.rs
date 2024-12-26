@@ -23,7 +23,7 @@ const END_BREAKLOOP: bool = false;
 fn main() {
     let args: SmallVec<[String; 8]> = std::env::args().collect();
 
-    let (input_type, output_type) = parse_args(args.iter().map(AsRef::as_ref).skip(1))
+    let (input_type, output_type, parallel) = parse_args(args.iter().map(AsRef::as_ref).skip(1))
         .unwrap_or_else(|e| {
             eprintln!("Arguement error:\n\t{}\nUse --help for more information", e);
             std::process::exit(1);
@@ -209,8 +209,13 @@ fn main() {
                         .unwrap_or(0)
                 };
 
-                start_offset =
-                    start_offset.max(queue.par_iter().map(schedule_link).max().unwrap_or(0));
+                start_offset = start_offset.max(
+                    match parallel {
+                        true => queue.par_iter().map(schedule_link).max(),
+                        false => queue.iter().map(schedule_link).max(),
+                    }
+                    .unwrap_or(0),
+                );
 
                 // 移除已处理的节点
                 for link in &queue {

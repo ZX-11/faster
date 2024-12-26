@@ -25,11 +25,11 @@ pub fn process(
             let parts: SmallVec<[&str; 6]> = line.split_whitespace().collect();
 
             match parts.as_slice() {
-                &[id, _rdelay, _fdelay, pdelay, _sfdelay, end] => {
+                &[id, _rdelay, _fdelay, _pdelay, sfdelay, end] => {
                     p.devices.insert(
                         id.into(),
                         Device {
-                            pdelay: pdelay.parse().unwrap(),
+                            pdelay: sfdelay.parse().unwrap(),
                             end_device: end == "1",
                         },
                     );

@@ -1,3 +1,7 @@
 /target
 *.tar.*
-*.0.*
+*.txt
+*.svg
+perf.*
+result*
+seq*

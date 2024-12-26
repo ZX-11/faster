@@ -243,8 +243,6 @@ fn main() {
                     breakloop.clear();
                 }
             } else {
-                const PARALLEL_THRESHOLD: usize = 8;
-
                 let schedule_link = |link: &&model::Link| {
                     // 获取当前链路待调度的流
                     let mut flows_to_sched: SmallVec<[_; 64]> = link
@@ -275,14 +273,8 @@ fn main() {
                         .unwrap_or(0)
                 };
 
-                // 根据队列大小选择串行或并行处理，并更新下一时序的起点
-                let max_offset = if queue.len() < PARALLEL_THRESHOLD {
-                    queue.iter().map(schedule_link).max().unwrap_or(0)
-                } else {
-                    queue.par_iter().map(schedule_link).max().unwrap_or(0)
-                };
-
-                start_offset = start_offset.max(max_offset);
+                start_offset =
+                    start_offset.max(queue.par_iter().map(schedule_link).max().unwrap_or(0));
 
                 // 移除已处理的节点
                 for link in &queue {

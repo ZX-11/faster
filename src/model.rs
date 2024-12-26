@@ -1,5 +1,8 @@
 use fxhash::{FxBuildHasher, FxHashMap, FxHashSet};
-use petgraph::{prelude::{StableGraph, EdgeIndex}, Graph};
+use petgraph::{
+    prelude::{EdgeIndex, StableGraph},
+    Graph,
+};
 use rayon::prelude::*;
 use smallvec::SmallVec;
 use std::{
@@ -39,9 +42,7 @@ pub fn init_processed_input() -> &'static mut ProcessedInput {
 
 // 调用前必须已经调用init_processed_input()
 pub fn processed_input() -> &'static ProcessedInput {
-    unsafe {
-        (&*std::ptr::addr_of!(PROCESSED_INPUT)).as_ref().unwrap()
-    }
+    unsafe { (&*std::ptr::addr_of!(PROCESSED_INPUT)).as_ref().unwrap() }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -165,9 +166,7 @@ impl<'a> Flow<'a> {
         let earliest = self.accdelay(link) + self.pdelay(link);
 
         // 获取当前链路已经完成调度的流
-        let prevs: SmallVec<[_; 64]> = flows
-            .filter(|f| f.as_ref().scheduled_link(link))
-            .collect();
+        let prevs: SmallVec<[_; 64]> = flows.filter(|f| f.as_ref().scheduled_link(link)).collect();
 
         // 计算宏周期
         let max_time = lcm(
@@ -211,7 +210,7 @@ impl<'a> Flow<'a> {
             .collect();
 
         let found = possible_starts
-            .par_iter()
+            .iter()
             .filter_map(|&start| {
                 let slots: SmallVec<[_; 128]> = (0..max_time / self.period)
                     .map(|i| i * self.period + start)
@@ -386,8 +385,8 @@ impl<'a> PreGraph<'a> {
     }
 }
 
-// 二分查找，时间复杂度为O(n log m)，保留该算法的实现供比较测试
-pub fn _conflict_with(slots: &[(u64, u64)], occupied: &[(u64, u64)]) -> bool {
+// 二分查找，时间复杂度为O(n log m)，由于m(occupied.len())通常较大，实际测试比双指针更快
+pub fn conflict_with(slots: &[(u64, u64)], occupied: &[(u64, u64)]) -> bool {
     if occupied.is_empty() {
         return false;
     }
@@ -400,7 +399,8 @@ pub fn _conflict_with(slots: &[(u64, u64)], occupied: &[(u64, u64)]) -> bool {
             })
             .is_ok()
     };
-    if slots.len() < 64 && occupied.len() < 512 {
+
+    if slots.len() < 1024 {
         // 串行处理
         slots.into_iter().any(conflict)
     } else {
@@ -409,8 +409,8 @@ pub fn _conflict_with(slots: &[(u64, u64)], occupied: &[(u64, u64)]) -> bool {
     }
 }
 
-// 使用双指针法检查冲突，时间复杂度为O(n + m)
-pub fn conflict_with(slots: &[(u64, u64)], occupied: &[(u64, u64)]) -> bool {
+// 使用双指针法检查冲突，时间复杂度为O(n + m)，实际测试更慢
+pub fn _conflict_with(slots: &[(u64, u64)], occupied: &[(u64, u64)]) -> bool {
     let mut i = 0;
     let mut j = 0;
 

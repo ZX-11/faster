@@ -7,7 +7,7 @@ use ustr::{Ustr, UstrMap};
 
 use crate::{
     input::inet::{Config, TIME_SCALE},
-    model::{self, processed_input},
+    model::processed_input,
 };
 
 #[derive(Serialize, Debug, Copy, Clone)]
@@ -77,16 +77,17 @@ pub fn output(filename: &str) {
     // 处理流信息
     for original_flow in &input.flows {
         let model_flow = &p.flows[&original_flow.name];
+        
         let first_sending_time = model_flow
-            .link_offsets
-            .iter()
-            .map(|e| e.value().clone())
+            .link_offsets()
+            .values()
             .min()
+            .cloned()
             .unwrap();
-        let (last_link, last_offset) = model_flow
-            .link_offsets
+
+        let (&last_link, &last_offset) = model_flow
+            .link_offsets()
             .iter()
-            .map(|e| (e.key().clone(), e.value().clone()))
             .max_by_key(|(_, offset)| *offset)
             .unwrap();
 
@@ -123,7 +124,7 @@ pub fn output(filename: &str) {
             for flow in input.flows.iter().filter(|f| f.hop_set.contains(&link_id)) {
                 // 获取流的调度信息
                 let model_flow = &p.flows[&flow.name];
-                let offset = model_flow.link_offset(&link_id);
+                let offset = model_flow.offset_of(&link_id);
                 priority_slots
                     .entry(flow.priority_value)
                     .or_default()
@@ -239,8 +240,31 @@ where
 }
 
 fn merge_slots(mut slots_data: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
-    let length = model::merge_slots(&mut slots_data);
-    slots_data.truncate(length);
+    if slots_data.len() <= 1 {
+        return slots_data;
+    }
+    slots_data.sort_unstable_by_key(|&(start, _)| start);
+
+    let mut w = 0;
+
+    for r in 1..slots_data.len() {
+        unsafe {
+            let curr = slots_data.get_unchecked(w);
+            let next = slots_data.get_unchecked(r);
+
+            if curr.0 + curr.1 == next.0 {
+                slots_data.get_unchecked_mut(w).1 += next.1;
+            } else {
+                w += 1;
+                if w != r {
+                    *slots_data.get_unchecked_mut(w) = *next;
+                }
+            }
+        }
+    }
+
+    // 返回合并后的数组长度
+    slots_data.truncate(w + 1);
     slots_data
 }
 

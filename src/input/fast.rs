@@ -97,7 +97,7 @@ pub fn process((device, flow, flowlink): (&str, &str, &str)) -> &'static Process
                             routes: hops.windows(2).map(|w| (w[0], w[1])).collect(),
                             ..Default::default()
                         }
-                        .generate_remain_min_delay(&p.links),
+                        .generate_remain_min_delay_p2p(),
                     );
                 }
                 _ => (),

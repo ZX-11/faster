@@ -6,14 +6,12 @@ use petgraph::{
 use smallvec::SmallVec;
 use std::{
     any::Any,
+    cell::{Cell, UnsafeCell},
     collections::VecDeque,
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
-    u64,
 };
 use ustr::{Ustr, UstrMap};
 
 type FxIndexMap<K, V> = indexmap::IndexMap<K, V, FxBuildHasher>;
-type FxDashMap<K, V> = dashmap::DashMap<K, V, FxBuildHasher>;
 
 pub type FlowID = Ustr;
 pub type LinkID = (Ustr, Ustr);
@@ -88,10 +86,10 @@ pub struct Flow<'a> {
     pub routes: Vec<RouteID>,
 
     // 调度状态
-    pub link_offsets: FxDashMap<LinkID, u64>,
-    pub start_offset: AtomicU64,
-    pub schedule_done: AtomicBool,
-    pub breakloop: AtomicBool,
+    pub link_offsets: UnsafeCell<FxHashMap<LinkID, u64>>,
+    pub start_offset: Cell<u64>,
+    pub schedule_done: Cell<bool>,
+    pub breakloop: Cell<bool>,
 }
 
 impl<'a> AsRef<Flow<'a>> for Flow<'a> {
@@ -103,22 +101,27 @@ impl<'a> AsRef<Flow<'a>> for Flow<'a> {
 impl<'a> Flow<'a> {
     #[inline]
     pub fn schedule_done(&self) -> bool {
-        self.schedule_done.load(Ordering::Relaxed)
+        self.schedule_done.get()
     }
 
     #[inline]
     pub fn start_offset(&self) -> u64 {
-        self.start_offset.load(Ordering::Relaxed)
+        self.start_offset.get()
     }
 
     #[inline]
     pub fn breakloop(&self) -> bool {
-        self.breakloop.load(Ordering::Relaxed)
+        self.breakloop.get()
     }
 
     #[inline]
-    pub fn link_offset(&self, link_id: &LinkID) -> u64 {
-        *self.link_offsets.get(link_id).unwrap()
+    pub fn offset_of(&self, link_id: &LinkID) -> u64 {
+        self.link_offsets()[link_id]
+    }
+
+    #[inline]
+    pub fn link_offsets(&self) -> &mut FxHashMap<LinkID, u64> {
+        unsafe { self.link_offsets.get().as_mut().unwrap_unchecked() }
     }
 
     pub fn calculate_urgency(&self, link: &'a Link) -> Option<u64> {
@@ -153,7 +156,7 @@ impl<'a> Flow<'a> {
 
     #[inline]
     pub fn scheduled_link(&self, link: &'a Link) -> bool {
-        self.link_offsets.contains_key(&link.id)
+        self.link_offsets().contains_key(&link.id)
     }
 
     pub fn first_unscheduled_link(&self) -> &'a Link {
@@ -180,14 +183,14 @@ impl<'a> Flow<'a> {
             lcm_all(prevs.iter().map(|f| f.as_ref().period)),
         );
 
-        // 计算已占用时间槽列表
+        // 计算已占用时间槽列表并排序合并
         let mut occupied: SmallVec<[_; 512]> = SmallVec::from_slice(&[(max_time, max_time)]);
         let mut earliest_occupied = false;
 
         for prev in &prevs {
             let prev = prev.as_ref();
             for i in 0..max_time / prev.period {
-                let start = i * prev.period + prev.link_offset(&link.id);
+                let start = i * prev.period + prev.offset_of(&link.id);
                 let end = start + prev.tdelay(link);
                 if start <= earliest && earliest <= end {
                     earliest_occupied = true;
@@ -202,6 +205,7 @@ impl<'a> Flow<'a> {
 
         merge_slots!(occupied);
 
+        // 找到所有待检测解并排序
         let mut possible_starts: SmallVec<[_; 512]> = occupied
             .windows(2)
             .filter_map(|slots| {
@@ -217,6 +221,7 @@ impl<'a> Flow<'a> {
 
         possible_starts.sort_unstable();
 
+        // 找到最小可行解
         let found = possible_starts
             .iter()
             .filter_map(|&start| {
@@ -233,9 +238,10 @@ impl<'a> Flow<'a> {
             .expect(&format!("No feasible schedule found for flow {}", self.id));
 
         // 更新调度状态
-        self.link_offsets.insert(link.id, found);
-        if self.link_offsets.len() == self.links.len() {
-            self.schedule_done.store(true, Ordering::Relaxed);
+        let link_offsets = self.link_offsets();
+        link_offsets.insert(link.id, found);
+        if link_offsets.len() == self.links.len() {
+            self.schedule_done.set(true);
         }
 
         // 返回时间槽结束offset
@@ -246,11 +252,22 @@ impl<'a> Flow<'a> {
         match self.predecessors.get(&link.id) {
             Some(pred) => pred
                 .iter()
-                .map(|l| self.link_offset(l) + self.tdelay(self.links[l]))
+                .map(|l| self.offset_of(l) + self.tdelay(self.links[l]))
                 .max()
                 .unwrap_or(self.start_offset()),
             None => self.start_offset(),
         }
+    }
+
+    pub fn generate_remain_min_delay_p2p(mut self) -> Self {
+        let mut result: FxHashMap<LinkID, u64> = Default::default();
+        let mut acc = 0;
+        for link in self.links.values().rev() {
+            result.insert(link.id, acc);
+            acc += self.pdelay(link) + self.tdelay(link) + self.ldelay(link);
+        }
+        self.remain_min_delay = result;
+        self
     }
 
     pub fn generate_remain_min_delay(mut self, links: &FxHashMap<LinkID, Link>) -> Self {
@@ -372,7 +389,7 @@ impl<'a> PreGraph<'a> {
     /// 移除指定流的所有路由边，并标记该流为破环状态
     pub fn breakloop(&mut self, flow: &Flow, route_id: &FxHashMap<(FlowID, RouteID), EdgeIndex>) {
         // 标记流为破环状态
-        flow.breakloop.store(true, Ordering::Relaxed);
+        flow.breakloop.set(true);
 
         // 移除流的所有路由边
         for route in flow.routes.iter() {
@@ -455,12 +472,7 @@ fn conflict_with(slots: &[(u64, u64)], occupied: &[(u64, u64)]) -> bool {
     false
 }
 
-pub fn sort_hops(
-    hops: &FxHashSet<LinkID>,
-) -> (
-    Vec<LinkID>,
-    FxHashMap<LinkID, Vec<LinkID>>,
-) {
+pub fn sort_hops(hops: &FxHashSet<LinkID>) -> (Vec<LinkID>, FxHashMap<LinkID, Vec<LinkID>>) {
     // 构建图的邻接表和入度表
     let mut adjacency_list: UstrMap<Vec<Ustr>> = Default::default();
     let mut in_degree: UstrMap<usize> = Default::default();
@@ -525,8 +537,8 @@ pub fn merge_slots(slots_data: &mut [(u64, u64)]) -> usize {
             let curr = slots_data.get_unchecked(w);
             let next = slots_data.get_unchecked(r);
 
-            if curr.0 + curr.1 == next.0 {
-                slots_data.get_unchecked_mut(w).1 += next.1;
+            if curr.1 == next.0 {
+                slots_data.get_unchecked_mut(w).1 = next.1;
             } else {
                 w += 1;
                 if w != r {

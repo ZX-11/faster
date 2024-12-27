@@ -11,7 +11,6 @@ Options:
   --input-fast <device> <flow> <flowlink>  Specify device, flow, and flowlink files for the FAST input type.
   --output-inet <file>       Specify the output file for the INET output type. Must be used after --input-inet.
   --output-console           Output to the console.
-  --parallel                 Enable parallel acceleration.
   --help                     Display this help message."#;
 
 #[macro_export]
@@ -42,10 +41,9 @@ pub enum OutputType<'a> {
 #[allow(unused_parens)]
 pub fn parse_args<'a>(
     mut args: impl Iterator<Item = &'a str>,
-) -> Result<(InputType<'a>, OutputType<'a>, bool), Box<dyn std::error::Error>> {
+) -> Result<(InputType<'a>, OutputType<'a>), Box<dyn std::error::Error>> {
     let mut input_type: Option<InputType<'a>> = None;
     let mut output_type: Option<OutputType<'a>> = None;
-    let mut parallel = false;
     while let Some(arg) = args.next() {
         match arg {
             "--input-inet" => {
@@ -76,9 +74,6 @@ pub fn parse_args<'a>(
             "--output-console" => {
                 output_type = Some(OutputType::Console);
             }
-            "--parallel" => {
-                parallel = true;
-            }
             "-h" | "--help" => {
                 println!("{}", HELP);
                 std::process::exit(0);
@@ -88,7 +83,7 @@ pub fn parse_args<'a>(
     }
 
     match (input_type, output_type) {
-        (Some(input), Some(output)) => Ok((input, output, parallel)),
+        (Some(input), Some(output)) => Ok((input, output)),
         _ => Err("Missing input or output type".into()),
     }
 }

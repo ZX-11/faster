@@ -5,11 +5,11 @@ edition = "2021"
 
 # 性能测试请启用如下编译选项 
 
-# [profile.release]
-# codegen-units = 1
-# lto = "fat"
-# panic = "abort"
-# strip = "symbols"
+[profile.release]
+codegen-units = 1
+lto = "fat"
+panic = "abort"
+strip = "symbols"
 
 [dependencies]
 petgraph = "0.6.5"
@@ -20,8 +20,6 @@ derive_deref = "1.1"
 smallvec = { version = "1.13.2", features = ["serde"] }
 fxhash = "0.2"
 json5 = "0.4"
-rayon = "1.10"
 regex = "1.11"
 indexmap = "2.7"
-dashmap = "6.1"
 lazy_static = "1.5"

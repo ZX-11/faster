@@ -7,7 +7,7 @@ use ustr::{Ustr, UstrMap};
 
 use crate::{
     input::inet::{Config, TIME_SCALE},
-    model::processed_input,
+    model::{self, processed_input},
 };
 
 #[derive(Serialize, Debug, Copy, Clone)]
@@ -239,36 +239,14 @@ where
 }
 
 fn merge_slots(mut slots_data: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
-    if slots_data.len() <= 1 {
-        return slots_data;
-    }
-    slots_data.sort_unstable_by_key(|&(start, _)| start);
-
-    let mut w = 0;
-
-    for r in 1..slots_data.len() {
-        unsafe {
-            let curr = slots_data.get_unchecked(w);
-            let next = slots_data.get_unchecked(r);
-
-            if curr.0 + curr.1 == next.0 {
-                slots_data.get_unchecked_mut(w).1 += next.1;
-            } else {
-                w += 1;
-                if w != r {
-                    *slots_data.get_unchecked_mut(w) = *next;
-                }
-            }
-        }
-    }
-
-    // 截断数组，只保留合并后的区间
-    slots_data.truncate(w + 1);
+    let length = model::merge_slots(&mut slots_data);
+    slots_data.truncate(length);
     slots_data
 }
 
 fn eth_index(input: &str) -> Option<u32> {
-    Regex::new(r"eth\[(\d+)\]").unwrap()
+    Regex::new(r"eth\[(\d+)\]")
+        .unwrap()
         .captures(input)
         .and_then(|caps| caps.get(1))
         .and_then(|m| m.as_str().parse().ok())

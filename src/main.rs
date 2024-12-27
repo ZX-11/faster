@@ -7,7 +7,7 @@ use model::{Network, PreGraph, ProcessedInput, Route};
 use petgraph::{
     algo::{is_cyclic_directed, tarjan_scc},
     prelude::StableGraph,
-    visit::EdgeRef,
+    Direction::Outgoing,
 };
 use rayon::iter::{IntoParallelRefIterator, ParallelIterator};
 use smallvec::SmallVec;
@@ -259,7 +259,7 @@ fn find_cycle_edges(graph: &StableGraph<&model::Link, Route>) -> Option<FxHashSe
 
     for scc in sccs.into_iter().filter(|scc| scc.len() > 1) {
         for &node_i in &scc {
-            for node_j in graph.edges(node_i).map(|e| e.target()) {
+            for node_j in graph.neighbors_directed(node_i, Outgoing) {
                 if scc.contains(&node_j) {
                     cycle_edges.insert((graph[node_i].id, graph[node_j].id));
                 }

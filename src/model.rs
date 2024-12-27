@@ -44,6 +44,13 @@ pub fn processed_input() -> &'static ProcessedInput {
     unsafe { (&*std::ptr::addr_of!(PROCESSED_INPUT)).as_ref().unwrap() }
 }
 
+macro_rules! merge_slots {
+    ($vec:expr) => {{
+        let length = crate::model::merge_slots($vec.as_mut_slice());
+        $vec.truncate(length);
+    }};
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct Device {
     // pub id: Ustr,
@@ -193,9 +200,9 @@ impl<'a> Flow<'a> {
             occupied.push((earliest, earliest));
         }
 
-        occupied.sort_unstable();
+        merge_slots!(occupied);
 
-        let possible_starts: FxHashSet<_> = occupied
+        let mut possible_starts: SmallVec<[_; 512]> = occupied
             .windows(2)
             .filter_map(|slots| {
                 let (_, prev_end) = unsafe { *slots.get_unchecked(0) };
@@ -207,6 +214,8 @@ impl<'a> Flow<'a> {
                 }
             })
             .collect();
+
+        possible_starts.sort_unstable();
 
         let found = possible_starts
             .iter()
@@ -220,7 +229,7 @@ impl<'a> Flow<'a> {
                     false => Some(start),
                 }
             })
-            .min()
+            .next()
             .expect(&format!("No feasible schedule found for flow {}", self.id));
 
         // 更新调度状态
@@ -501,6 +510,34 @@ pub fn sort_hops(
     }
 
     (sorted_hops, predecessors)
+}
+
+pub fn merge_slots(slots_data: &mut [(u64, u64)]) -> usize {
+    if slots_data.len() <= 1 {
+        return slots_data.len();
+    }
+    slots_data.sort_unstable_by_key(|&(start, _)| start);
+
+    let mut w = 0;
+
+    for r in 1..slots_data.len() {
+        unsafe {
+            let curr = slots_data.get_unchecked(w);
+            let next = slots_data.get_unchecked(r);
+
+            if curr.0 + curr.1 == next.0 {
+                slots_data.get_unchecked_mut(w).1 += next.1;
+            } else {
+                w += 1;
+                if w != r {
+                    *slots_data.get_unchecked_mut(w) = *next;
+                }
+            }
+        }
+    }
+
+    // 返回合并后的数组长度
+    w + 1
 }
 
 fn gcd(mut a: u64, mut b: u64) -> u64 {

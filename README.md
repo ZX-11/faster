@@ -63,10 +63,13 @@ JSON 输入文件需要包含以下主要字段：
 ## 项目结构
 
 ```
-src/
-├── main.rs       # 主程序入口
-├── model.rs      # 核心数据模型
-├── input_json.rs # JSON 输入处理
-├── input_inet.rs # INET 输入处理
-└── output_inet.rs # INET 输出生成
+src
+├── input           # 输入模块
+│   ├── fast.rs     # FAST 输入处理
+│   ├── inet.rs     # INET 输入处理
+│   ├── json.rs     # JSON 输入处理
+│   └── mod.rs      # 输入模块入口
+├── main.rs         # 主程序入口
+├── model.rs        # 核心数据模型
+└── output_inet.rs  # INET 输出生成
 ```

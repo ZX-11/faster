@@ -114,7 +114,7 @@ fn main() {
             if queue.is_empty() {
                 if END_BREAKLOOP {
                     let mut urgency = Vec::with_capacity(seq_flows.len());
-                    urgency.extend(seq_flows.values().filter(|flow| !flow.schedule_done()).map(
+                    urgency.extend(seq_flows.values().filter(|flow| !flow.schedule_done.get()).map(
                         |&flow| {
                             (
                                 flow,
@@ -143,7 +143,7 @@ fn main() {
                         flow_to_cycle_edge_count.reserve(seq_flows.len());
 
                         for edge in &cycle_edges {
-                            for flow in route_flows[edge].iter().filter(|f| !f.breakloop()) {
+                            for flow in route_flows[edge].iter().filter(|f| !f.breakloop.get()) {
                                 *flow_to_cycle_edge_count.entry(flow.id).or_insert(0u32) += 1;
                             }
                         }
@@ -185,7 +185,7 @@ fn main() {
                         .iter()
                         .map(|f| &flows[f])
                         .filter(|f| {
-                            seq_flows.contains_key(&f.id) && !f.schedule_done() && !f.breakloop()
+                            seq_flows.contains_key(&f.id) && !f.schedule_done.get() && !f.breakloop.get()
                         })
                         .map(|f| (f, f.calculate_urgency(link).unwrap()))
                         .collect();

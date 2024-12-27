@@ -100,21 +100,6 @@ impl<'a> AsRef<Flow<'a>> for Flow<'a> {
 
 impl<'a> Flow<'a> {
     #[inline]
-    pub fn schedule_done(&self) -> bool {
-        self.schedule_done.get()
-    }
-
-    #[inline]
-    pub fn start_offset(&self) -> u64 {
-        self.start_offset.get()
-    }
-
-    #[inline]
-    pub fn breakloop(&self) -> bool {
-        self.breakloop.get()
-    }
-
-    #[inline]
     pub fn offset_of(&self, link_id: &LinkID) -> u64 {
         self.link_offsets()[link_id]
     }
@@ -254,8 +239,8 @@ impl<'a> Flow<'a> {
                 .iter()
                 .map(|l| self.offset_of(l) + self.tdelay(self.links[l]))
                 .max()
-                .unwrap_or(self.start_offset()),
-            None => self.start_offset(),
+                .unwrap_or(self.start_offset.get()),
+            None => self.start_offset.get(),
         }
     }
 

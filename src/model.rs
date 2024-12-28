@@ -190,7 +190,7 @@ impl<'a> Flow<'a> {
 
         merge_slots!(occupied);
 
-        // 找到所有待检测解并排序
+        // 找到所有待检测解并排序去重
         let mut possible_starts: SmallVec<[_; 512]> = occupied
             .windows(2)
             .filter_map(|slots| {
@@ -205,6 +205,7 @@ impl<'a> Flow<'a> {
             .collect();
 
         possible_starts.sort_unstable();
+        possible_starts.dedup();
 
         // 找到最小可行解
         let found = possible_starts

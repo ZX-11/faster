@@ -5,11 +5,11 @@ edition = "2021"
 
 # 性能测试请启用如下编译选项 
 
-[profile.release]
-codegen-units = 1
-lto = "fat"
-panic = "abort"
-strip = "symbols"
+# [profile.release]
+# codegen-units = 1
+# lto = "fat"
+# panic = "abort"
+# strip = "symbols"
 
 [dependencies]
 petgraph = "0.6.5"

@@ -131,7 +131,12 @@ impl<'a> Flow<'a> {
 
     #[inline]
     pub fn tdelay(&self, link: &'a Link) -> u64 {
-        (self.length * 8000 / link.speed) as u64
+        (match link.speed {
+            10 => self.length * 800,
+            100 => self.length * 80,
+            1000 => self.length * 8,
+            _ => self.length * 8000 / link.speed
+        }) as u64
     }
 
     #[inline]
@@ -192,11 +197,14 @@ impl<'a> Flow<'a> {
 
         // 找到所有待检测解并排序去重
         let mut possible_starts: SmallVec<[_; 512]> = occupied
-            .windows(2)
-            .filter_map(|slots| {
-                let (_, prev_end) = unsafe { *slots.get_unchecked(0) };
-                let (next_start, _) = unsafe { *slots.get_unchecked(1) };
-                let start = prev_end % self.period;
+            .iter()
+            .zip(occupied.iter().skip(1))
+            .filter_map(|(&(_, prev_end), &(next_start, _))| {
+                let start = if prev_end < self.period {
+                    prev_end
+                } else {
+                    prev_end % self.period
+                };
                 match start >= earliest && next_start >= prev_end + self.tdelay(link) {
                     true => Some(start),
                     false => None,
@@ -208,19 +216,15 @@ impl<'a> Flow<'a> {
         possible_starts.dedup();
 
         // 找到最小可行解
-        let found = possible_starts
+        let &found = possible_starts
             .iter()
-            .filter_map(|&start| {
+            .find(|&start| {
                 let slots: SmallVec<[_; 128]> = (0..max_time / self.period)
                     .map(|i| i * self.period + start)
                     .map(|start| (start, start + self.tdelay(link)))
                     .collect();
-                match conflict_with(&slots, &occupied) {
-                    true => None,
-                    false => Some(start),
-                }
+                !conflict_with(&slots, &occupied)
             })
-            .next()
             .expect(&format!("No feasible schedule found for flow {}", self.id));
 
         // 更新调度状态

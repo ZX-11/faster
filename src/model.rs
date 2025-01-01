@@ -135,7 +135,7 @@ impl<'a> Flow<'a> {
             10 => self.length * 800,
             100 => self.length * 80,
             1000 => self.length * 8,
-            _ => self.length * 8000 / link.speed
+            _ => self.length * 8000 / link.speed,
         }) as u64
     }
 
@@ -164,24 +164,28 @@ impl<'a> Flow<'a> {
     ) -> u64 {
         let earliest = self.accdelay(link) + self.pdelay(link);
 
-        // 获取当前链路已经完成调度的流
-        let prevs: SmallVec<[_; 64]> = flows.filter(|f| f.as_ref().scheduled_link(link)).collect();
+        // 获取当前链路已经完成调度的流的信息(period, offset, tdelay)
+        let prevs: SmallVec<[_; 256]> = flows.filter_map(|f| {
+            f.as_ref()
+                .link_offsets()
+                .get(&link.id)
+                .map(|offset| (f.as_ref().period, *offset, f.as_ref().tdelay(link)))
+        }).collect();
 
         // 计算宏周期
         let max_time = lcm(
             self.period,
-            lcm_all(prevs.iter().map(|f| f.as_ref().period)),
+            lcm_all(prevs.iter().map(|f| f.0)),
         );
 
         // 计算已占用时间槽列表并排序合并
         let mut occupied: SmallVec<[_; 512]> = SmallVec::from_slice(&[(max_time, max_time)]);
         let mut earliest_occupied = false;
 
-        for prev in &prevs {
-            let prev = prev.as_ref();
-            for i in 0..max_time / prev.period {
-                let start = i * prev.period + prev.offset_of(&link.id);
-                let end = start + prev.tdelay(link);
+        for (period, offset, tdelay) in &prevs {
+            for i in 0..max_time / period {
+                let start = i * period + offset;
+                let end = start + tdelay;
                 if start <= earliest && earliest <= end {
                     earliest_occupied = true;
                 }
@@ -195,6 +199,8 @@ impl<'a> Flow<'a> {
 
         merge_slots!(occupied);
 
+        let tdelay = self.tdelay(link);
+
         // 找到所有待检测解并排序去重
         let mut possible_starts: SmallVec<[_; 512]> = occupied
             .iter()
@@ -205,7 +211,7 @@ impl<'a> Flow<'a> {
                 } else {
                     prev_end % self.period
                 };
-                match start >= earliest && next_start >= prev_end + self.tdelay(link) {
+                match start >= earliest && next_start >= prev_end + tdelay {
                     true => Some(start),
                     false => None,
                 }
@@ -221,7 +227,7 @@ impl<'a> Flow<'a> {
             .find(|&start| {
                 let slots: SmallVec<[_; 128]> = (0..max_time / self.period)
                     .map(|i| i * self.period + start)
-                    .map(|start| (start, start + self.tdelay(link)))
+                    .map(|start| (start, start + tdelay))
                     .collect();
                 !conflict_with(&slots, &occupied)
             })
@@ -235,7 +241,7 @@ impl<'a> Flow<'a> {
         }
 
         // 返回时间槽结束offset
-        found + self.tdelay(link) + self.ldelay(link)
+        found + tdelay + self.ldelay(link)
     }
 
     fn accdelay(&self, link: &Link) -> u64 {
@@ -551,6 +557,7 @@ fn gcd(mut a: u64, mut b: u64) -> u64 {
     a
 }
 
+#[inline]
 fn lcm(a: u64, b: u64) -> u64 {
     (a / gcd(a, b)) * b
 }

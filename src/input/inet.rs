@@ -178,6 +178,7 @@ pub fn process((filename, sequence): (&str, &str)) -> &'static ProcessedInput {
                             .filter(|f| f.hop_set.contains(&(sw.name, port.connects_to)))
                             .map(|f| f.name)
                             .collect(),
+                        ..Default::default()
                     },
                 )
             })
@@ -208,6 +209,7 @@ pub fn process((filename, sequence): (&str, &str)) -> &'static ProcessedInput {
                                 .filter(|f| f.hop_set.contains(&(port.connects_to, sw.name)))
                                 .map(|f| f.name)
                                 .collect(),
+                            ..Default::default()
                         },
                     )
                 })

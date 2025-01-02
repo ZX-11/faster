@@ -170,7 +170,7 @@ fn main() {
 
                     for (f, _) in breakloop.iter() {
                         for link in f.links.values().filter(|l| !f.scheduled_link(l)) {
-                            start_offset = start_offset.max(f.schedule_link(flows.values(), link));
+                            start_offset = start_offset.max(f.schedule_link(flows.values(), link, sequence));
                         }
                     }
 
@@ -199,9 +199,9 @@ fn main() {
                         .map(|(flow, _)| *flow)
                         .map(|f| {
                             if no_seq {
-                                f.schedule_link(flows.values(), link)
+                                f.schedule_link(flows.values(), link, sequence)
                             } else {
-                                f.schedule_link(seq_flows.values(), link)
+                                f.schedule_link(seq_flows.values(), link, sequence)
                             }
                         })
                         .max()
@@ -222,9 +222,9 @@ fn main() {
             for (f, _) in breakloop.iter().rev() {
                 for link in f.links.values().filter(|l| !f.scheduled_link(l)) {
                     start_offset = start_offset.max(if no_seq {
-                        f.schedule_link(flows.values(), link)
+                        f.schedule_link(flows.values(), link, sequence)
                     } else {
-                        f.schedule_link(seq_flows.values(), link)
+                        f.schedule_link(seq_flows.values(), link, sequence)
                     });
                 }
             }

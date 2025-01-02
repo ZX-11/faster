@@ -49,14 +49,14 @@ macro_rules! merge_slots {
     }};
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct Device {
     // pub id: Ustr,
     pub pdelay: u32,
     pub end_device: bool,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Link {
     pub id: LinkID,
     pub from: Device,
@@ -64,6 +64,22 @@ pub struct Link {
     pub delay: u32,
     pub speed: u32,
     pub flows: Vec<FlowID>,
+
+    pub schedule_info: UnsafeCell<FxHashMap<u32, Vec<FlowScheduleInfo>>>,
+}
+
+impl Link {
+    #[inline]
+    fn schedule_info(&self, sequence: u32) -> &mut Vec<FlowScheduleInfo> {
+        unsafe {
+            self.schedule_info
+                .get()
+                .as_mut()
+                .unwrap_unchecked()
+                .entry(sequence)
+                .or_default()
+        }
+    }
 }
 
 #[allow(dead_code)]
@@ -90,6 +106,13 @@ pub struct Flow<'a> {
     pub start_offset: Cell<u64>,
     pub schedule_done: Cell<bool>,
     pub breakloop: Cell<bool>,
+}
+
+#[derive(Debug, Default)]
+pub struct FlowScheduleInfo {
+    period: u64,
+    offset: u64,
+    tdelay: u64,
 }
 
 impl<'a> AsRef<Flow<'a>> for Flow<'a> {
@@ -159,30 +182,27 @@ impl<'a> Flow<'a> {
 
     pub fn schedule_link(
         &self,
-        flows: impl Iterator<Item = impl AsRef<Flow<'a>>>,
+        _flows: impl Iterator<Item = impl AsRef<Flow<'a>>>,
         link: &'a Link,
+        sequence: u32,
     ) -> u64 {
         let earliest = self.accdelay(link) + self.pdelay(link);
 
-        // 获取当前链路已经完成调度的流的信息(period, offset, tdelay)
-        let prevs: SmallVec<[_; 256]> = flows.filter_map(|f| {
-            f.as_ref()
-                .link_offsets()
-                .get(&link.id)
-                .map(|offset| (f.as_ref().period, *offset, f.as_ref().tdelay(link)))
-        }).collect();
+        // 获取当前链路已经完成调度的流的信息
+        let prevs = link.schedule_info(sequence);
 
         // 计算宏周期
-        let max_time = lcm(
-            self.period,
-            lcm_all(prevs.iter().map(|f| f.0)),
-        );
+        let max_time = lcm(self.period, lcm_all(prevs.iter().map(|f| f.period)));
 
         // 计算已占用时间槽列表并排序合并
         let mut occupied: SmallVec<[_; 512]> = SmallVec::from_slice(&[(max_time, max_time)]);
         let mut earliest_occupied = false;
 
-        for (period, offset, tdelay) in &prevs {
+        for FlowScheduleInfo {
+            period,
+            offset,
+            tdelay,
+        } in prevs.iter() {
             for i in 0..max_time / period {
                 let start = i * period + offset;
                 let end = start + tdelay;
@@ -218,7 +238,7 @@ impl<'a> Flow<'a> {
             })
             .collect();
 
-        possible_starts.sort_unstable();
+        radsort::sort(&mut possible_starts);
         possible_starts.dedup();
 
         // 找到最小可行解
@@ -238,6 +258,12 @@ impl<'a> Flow<'a> {
         link_offsets.insert(link.id, found);
         if link_offsets.len() == self.links.len() {
             self.schedule_done.set(true);
+        }
+
+        prevs.push(FlowScheduleInfo { period: self.period, offset: found, tdelay });
+
+        if sequence != u32::MAX {
+            link.schedule_info(u32::MAX).push(FlowScheduleInfo { period: self.period, offset: found, tdelay });
         }
 
         // 返回时间槽结束offset
@@ -524,7 +550,9 @@ pub fn merge_slots(slots_data: &mut [(u64, u64)]) -> usize {
     if slots_data.len() <= 1 {
         return slots_data.len();
     }
-    slots_data.sort_unstable_by_key(|&(start, _)| start);
+
+    // 使用基数排序并将key压缩为u32以加速排序，绝大多数情况下u32不会溢出
+    radsort::sort_by_key(slots_data, |&(start, _)| start as u32);
 
     let mut w = 0;
 

@@ -95,6 +95,7 @@ pub fn process(filename: &str) -> &'static ProcessedInput {
                             .filter(|f| f.hops.as_ref().unwrap().contains(&(d.name, ln.to)))
                             .map(|f| f.name)
                             .collect(),
+                        ..Default::default()
                     },
                 )
             })

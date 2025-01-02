@@ -42,7 +42,7 @@ pub fn process((device, flow, flowlink): (&str, &str, &str)) -> &'static Process
                             _to: p.devices[&to],
                             delay: ldelay.parse().unwrap(),
                             speed,
-                            flows: Vec::new(),
+                            ..Default::default()
                         },
                     );
                 }

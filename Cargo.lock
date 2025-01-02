@@ -112,6 +112,7 @@ dependencies = [
  "json5",
  "lazy_static",
  "petgraph",
+ "radsort",
  "regex",
  "serde",
  "serde_json",
@@ -306,6 +307,12 @@ checksum = "b5b9d34b8991d19d98081b46eacdd8eb58c6f2b201139f7c5f643cc155a633af"
 dependencies = [
  "proc-macro2",
 ]
+
+[[package]]
+name = "radsort"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "019b4b213425016d7d84a153c4c73afb0946fbb4840e4eece7ba8848b9d6da22"
 
 [[package]]
 name = "redox_syscall"

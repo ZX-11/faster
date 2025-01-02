@@ -6,8 +6,9 @@ use petgraph::{
 use smallvec::SmallVec;
 use std::{
     any::Any,
-    cell::{Cell, UnsafeCell},
+    cell::{Cell, RefCell, UnsafeCell},
     collections::VecDeque,
+    u32,
 };
 use ustr::{Ustr, UstrMap};
 
@@ -42,12 +43,12 @@ pub fn processed_input() -> &'static ProcessedInput {
     unsafe { (&*std::ptr::addr_of!(PROCESSED_INPUT)).as_ref().unwrap() }
 }
 
-macro_rules! merge_slots {
-    ($vec:expr) => {{
-        let length = crate::model::merge_slots($vec.as_mut_slice());
-        $vec.truncate(length);
-    }};
-}
+// macro_rules! merge_slots {
+//     ($vec:expr) => {{
+//         let length = crate::model::merge_slots($vec.as_mut_slice());
+//         $vec.truncate(length);
+//     }};
+// }
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Device {
@@ -65,20 +66,77 @@ pub struct Link {
     pub speed: u32,
     pub flows: Vec<FlowID>,
 
-    pub schedule_info: UnsafeCell<FxHashMap<u32, Vec<FlowScheduleInfo>>>,
+    pub occupied: UnsafeCell<FxIndexMap<u32, Vec<(u64, u64)>>>,
+    pub macro_time: RefCell<FxHashMap<u32, u64>>,
+    pub max_time: RefCell<FxHashMap<u32, u64>>,
 }
 
 impl Link {
     #[inline]
-    fn schedule_info(&self, sequence: u32) -> &mut Vec<FlowScheduleInfo> {
-        unsafe {
-            self.schedule_info
-                .get()
-                .as_mut()
-                .unwrap_unchecked()
-                .entry(sequence)
-                .or_default()
+    fn occupied(&self) -> &mut FxIndexMap<u32, Vec<(u64, u64)>> {
+        unsafe { self.occupied.get().as_mut().unwrap_unchecked() }
+    }
+
+    fn merge_slots(&self, slots: &[(u64, u64)], sequence: u32) {
+        let occupied = self.occupied().entry(sequence).or_default();
+
+        // Early return if occupied is empty
+        if occupied.is_empty() {
+            *occupied = slots.to_vec();
+            return;
         }
+
+        let mut new: Vec<(u64, u64)> = Vec::with_capacity(occupied.len() + slots.len());
+        let mut i = 0;
+        let mut j = 0;
+
+        // Merge the two sorted lists
+        while i < occupied.len() && j < slots.len() {
+            unsafe {
+                match (
+                    occupied.get_unchecked(i),
+                    slots.get_unchecked(j),
+                    new.last_mut(),
+                ) {
+                    (x, _, Some(last)) if last.1 == x.0 => {
+                        last.1 = x.1;
+                        i += 1;
+                    }
+                    (_, y, Some(last)) if last.1 == y.0 => {
+                        last.1 = y.1;
+                        j += 1;
+                    }
+                    (x, y, _) if x.0 < y.0 => {
+                        new.push(*x);
+                        i += 1;
+                    }
+                    (_, y, _) => {
+                        new.push(*y);
+                        j += 1;
+                    }
+                }
+            }
+        }
+
+        let last = new.last_mut().unwrap();
+
+        if i < occupied.len() {
+            if occupied[i].0 == last.1 {
+                last.1 = occupied[i].1;
+                new.extend_from_slice(&occupied[i + 1..]);
+            } else {
+                new.extend_from_slice(&occupied[i..]);
+            }
+        } else if j < slots.len() {
+            if slots[j].0 == last.1 {
+                last.1 = slots[j].1;
+                new.extend_from_slice(&slots[j + 1..]);
+            } else {
+                new.extend_from_slice(&slots[j..]);
+            }
+        }
+
+        *occupied = new;
     }
 }
 
@@ -106,13 +164,6 @@ pub struct Flow<'a> {
     pub start_offset: Cell<u64>,
     pub schedule_done: Cell<bool>,
     pub breakloop: Cell<bool>,
-}
-
-#[derive(Debug, Default)]
-pub struct FlowScheduleInfo {
-    period: u64,
-    offset: u64,
-    tdelay: u64,
 }
 
 impl<'a> AsRef<Flow<'a>> for Flow<'a> {
@@ -182,42 +233,75 @@ impl<'a> Flow<'a> {
 
     pub fn schedule_link(
         &self,
-        _flows: impl Iterator<Item = impl AsRef<Flow<'a>>>,
+        flows: impl Iterator<Item = impl AsRef<Flow<'a>>>,
         link: &'a Link,
         sequence: u32,
     ) -> u64 {
         let earliest = self.accdelay(link) + self.pdelay(link);
 
-        // 获取当前链路已经完成调度的流的信息
-        let prevs = link.schedule_info(sequence);
+        // 计算已调度最大周期
+        let max_time = {
+            let mut m = link.max_time.borrow_mut();
+            let max_time = *m
+                .entry(sequence)
+                .and_modify(|v| *v = lcm(self.period, *v))
+                .or_insert(self.period);
+            if sequence != u32::MAX {
+                m.entry(u32::MAX)
+                    .and_modify(|v| *v = lcm(*v, max_time))
+                    .or_insert(max_time);
+            }
+            max_time
+        };
 
         // 计算宏周期
-        let max_time = lcm(self.period, lcm_all(prevs.iter().map(|f| f.period)));
+        let macro_time = link
+            .macro_time
+            .borrow_mut()
+            .entry(sequence)
+            .or_insert(lcm_all(flows.map(|f| f.as_ref().period)))
+            .clone();
 
-        // 计算已占用时间槽列表并排序合并
-        let mut occupied: SmallVec<[_; 512]> = SmallVec::from_slice(&[(max_time, max_time)]);
-        let mut earliest_occupied = false;
-
-        for FlowScheduleInfo {
-            period,
-            offset,
-            tdelay,
-        } in prevs.iter() {
-            for i in 0..max_time / period {
-                let start = i * period + offset;
-                let end = start + tdelay;
-                if start <= earliest && earliest <= end {
-                    earliest_occupied = true;
-                }
-                occupied.push((start, end));
-            }
+        // 初始化无时序已分配时间槽
+        if sequence == u32::MAX && !link.occupied().contains_key(&u32::MAX) {
+            link.occupied().insert(
+                u32::MAX,
+                link.occupied()
+                    .values()
+                    .flat_map(|i| i.iter())
+                    .cloned()
+                    .collect(),
+            );
         }
 
-        if !earliest_occupied {
-            occupied.push((earliest, earliest));
-        }
+        let mut earliest_occupied = true;
 
-        merge_slots!(occupied);
+        let occupied = link.occupied().entry(sequence).or_default();
+
+        let occupied = {
+            let i = occupied
+                .binary_search_by(|&(start, end)| {
+                    if end < earliest {
+                        std::cmp::Ordering::Less
+                    } else if start > earliest {
+                        std::cmp::Ordering::Greater
+                    } else {
+                        std::cmp::Ordering::Equal
+                    }
+                })
+                .unwrap_or_else(|i| {
+                    earliest_occupied = false;
+                    i
+                });
+            &occupied[i..]
+        };
+
+        let occupied = {
+            let i = occupied
+                .binary_search_by_key(&max_time, |&(_, end)| end)
+                .unwrap_or_else(|i| i - 1);
+            &occupied[..i + 1]
+        };
 
         let tdelay = self.tdelay(link);
 
@@ -238,6 +322,16 @@ impl<'a> Flow<'a> {
             })
             .collect();
 
+        if !earliest_occupied {
+            possible_starts.push(earliest);
+        }
+
+        if let Some(last) = occupied.last() {
+            if last.1 + tdelay <= self.period {
+                possible_starts.push(last.1);
+            }
+        }
+
         radsort::sort(&mut possible_starts);
         possible_starts.dedup();
 
@@ -249,7 +343,20 @@ impl<'a> Flow<'a> {
                     .map(|i| i * self.period + start)
                     .map(|start| (start, start + tdelay))
                     .collect();
-                !conflict_with(&slots, &occupied)
+
+                let ok = !conflict_with(&slots, &occupied);
+                if ok {
+                    if macro_time != max_time {
+                        let slots: SmallVec<[_; 128]> = (0..macro_time / self.period)
+                            .map(|i| i * self.period + start)
+                            .map(|start| (start, start + tdelay))
+                            .collect();
+                        link.merge_slots(&slots, sequence);
+                    } else {
+                        link.merge_slots(&slots, sequence);
+                    }
+                }
+                ok
             })
             .expect(&format!("No feasible schedule found for flow {}", self.id));
 
@@ -258,12 +365,6 @@ impl<'a> Flow<'a> {
         link_offsets.insert(link.id, found);
         if link_offsets.len() == self.links.len() {
             self.schedule_done.set(true);
-        }
-
-        prevs.push(FlowScheduleInfo { period: self.period, offset: found, tdelay });
-
-        if sequence != u32::MAX {
-            link.schedule_info(u32::MAX).push(FlowScheduleInfo { period: self.period, offset: found, tdelay });
         }
 
         // 返回时间槽结束offset
@@ -434,41 +535,41 @@ impl<'a> PreGraph<'a> {
 
 // 二分查找，时间复杂度为O(n log m)
 // n = slots.len(), m = occupied.len()
-fn _conflict_with_1(slots: &[(u64, u64)], occupied: &[(u64, u64)]) -> bool {
-    if occupied.is_empty() {
-        return false;
-    }
+// fn _conflict_with_1(slots: &[(u64, u64)], occupied: &[(u64, u64)]) -> bool {
+//     if occupied.is_empty() {
+//         return false;
+//     }
 
-    slots.into_iter().any(|&(start, end)| {
-        occupied
-            .binary_search_by(|&(occupied_start, occupied_end)| match true {
-                _ if occupied_end <= start => std::cmp::Ordering::Less,
-                _ if occupied_start >= end => std::cmp::Ordering::Greater,
-                _ => std::cmp::Ordering::Equal,
-            })
-            .is_ok()
-    })
-}
+//     slots.into_iter().any(|&(start, end)| {
+//         occupied
+//             .binary_search_by(|&(occupied_start, occupied_end)| match true {
+//                 _ if occupied_end <= start => std::cmp::Ordering::Less,
+//                 _ if occupied_start >= end => std::cmp::Ordering::Greater,
+//                 _ => std::cmp::Ordering::Equal,
+//             })
+//             .is_ok()
+//     })
+// }
 
 // 双指针法，时间复杂度为O(n + m)
-fn _conflict_with_2(slots: &[(u64, u64)], occupied: &[(u64, u64)]) -> bool {
-    let mut i = 0;
-    let mut j = 0;
+// fn _conflict_with_2(slots: &[(u64, u64)], occupied: &[(u64, u64)]) -> bool {
+//     let mut i = 0;
+//     let mut j = 0;
 
-    while i < slots.len() && j < occupied.len() {
-        let (s1, e1) = unsafe { *slots.get_unchecked(i) };
-        let (s2, e2) = unsafe { *occupied.get_unchecked(j) };
+//     while i < slots.len() && j < occupied.len() {
+//         let (s1, e1) = unsafe { *slots.get_unchecked(i) };
+//         let (s2, e2) = unsafe { *occupied.get_unchecked(j) };
 
-        if e1 <= s2 {
-            i += 1;
-        } else if e2 <= s1 {
-            j += 1;
-        } else {
-            return true;
-        }
-    }
-    false
-}
+//         if e1 <= s2 {
+//             i += 1;
+//         } else if e2 <= s1 {
+//             j += 1;
+//         } else {
+//             return true;
+//         }
+//     }
+//     false
+// }
 
 // 结合双指针和二分查找，时间复杂度为O(n + log m)
 fn conflict_with(slots: &[(u64, u64)], occupied: &[(u64, u64)]) -> bool {
@@ -546,35 +647,35 @@ pub fn sort_hops(hops: &FxHashSet<LinkID>) -> (Vec<LinkID>, FxHashMap<LinkID, Ve
     (sorted_hops, predecessors)
 }
 
-pub fn merge_slots(slots_data: &mut [(u64, u64)]) -> usize {
-    if slots_data.len() <= 1 {
-        return slots_data.len();
-    }
+// pub fn merge_slots(slots_data: &mut [(u64, u64)]) -> usize {
+//     if slots_data.len() <= 1 {
+//         return slots_data.len();
+//     }
 
-    // 使用基数排序并将key压缩为u32以加速排序，绝大多数情况下u32不会溢出
-    radsort::sort_by_key(slots_data, |&(start, _)| start as u32);
+//     // 使用基数排序并将key压缩为u32以加速排序，绝大多数情况下u32不会溢出
+//     radsort::sort_by_key(slots_data, |&(start, _)| start as u32);
 
-    let mut w = 0;
+//     let mut w = 0;
 
-    for r in 1..slots_data.len() {
-        unsafe {
-            let curr = slots_data.get_unchecked(w);
-            let next = slots_data.get_unchecked(r);
+//     for r in 1..slots_data.len() {
+//         unsafe {
+//             let curr = slots_data.get_unchecked(w);
+//             let next = slots_data.get_unchecked(r);
 
-            if curr.1 == next.0 {
-                slots_data.get_unchecked_mut(w).1 = next.1;
-            } else {
-                w += 1;
-                if w != r {
-                    *slots_data.get_unchecked_mut(w) = *next;
-                }
-            }
-        }
-    }
+//             if curr.1 == next.0 {
+//                 slots_data.get_unchecked_mut(w).1 = next.1;
+//             } else {
+//                 w += 1;
+//                 if w != r {
+//                     *slots_data.get_unchecked_mut(w) = *next;
+//                 }
+//             }
+//         }
+//     }
 
-    // 返回合并后的数组长度
-    w + 1
-}
+//     // 返回合并后的数组长度
+//     w + 1
+// }
 
 fn gcd(mut a: u64, mut b: u64) -> u64 {
     while b != 0 {
@@ -587,7 +688,11 @@ fn gcd(mut a: u64, mut b: u64) -> u64 {
 
 #[inline]
 fn lcm(a: u64, b: u64) -> u64 {
-    (a / gcd(a, b)) * b
+    if a == b {
+        a
+    } else {
+        (a / gcd(a, b)) * b
+    }
 }
 
 fn lcm_all(it: impl Iterator<Item = u64>) -> u64 {

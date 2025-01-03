@@ -274,34 +274,17 @@ impl<'a> Flow<'a> {
             );
         }
 
-        let mut earliest_occupied = true;
-
+        // 取出与本次调度相关的时间槽
         let occupied = link.occupied().entry(sequence).or_default();
 
-        let occupied = {
-            let i = occupied
-                .binary_search_by(|&(start, end)| {
-                    if end < earliest {
-                        std::cmp::Ordering::Less
-                    } else if start > earliest {
-                        std::cmp::Ordering::Greater
-                    } else {
-                        std::cmp::Ordering::Equal
-                    }
-                })
-                .unwrap_or_else(|i| {
-                    earliest_occupied = false;
-                    i
-                });
-            &occupied[i..]
-        };
+        let start = occupied
+            .binary_search_by_key(&earliest, |slot| slot.1)
+            .unwrap_or_else(|i| i);
+        let end = occupied[start..]
+            .binary_search_by_key(&max_time, |slot| slot.0)
+            .unwrap_or_else(|i| i);
 
-        let occupied = {
-            let i = occupied
-                .binary_search_by_key(&max_time, |&(_, end)| end)
-                .unwrap_or_else(|i| i - 1);
-            &occupied[..i + 1]
-        };
+        let occupied = &occupied[start..start + end];
 
         let tdelay = self.tdelay(link);
 
@@ -310,11 +293,7 @@ impl<'a> Flow<'a> {
             .iter()
             .zip(occupied.iter().skip(1))
             .filter_map(|(&(_, prev_end), &(next_start, _))| {
-                let start = if prev_end < self.period {
-                    prev_end
-                } else {
-                    prev_end % self.period
-                };
+                let start = _mod(prev_end, self.period);
                 match start >= earliest && next_start >= prev_end + tdelay {
                     true => Some(start),
                     false => None,
@@ -322,16 +301,19 @@ impl<'a> Flow<'a> {
             })
             .collect();
 
-        if !earliest_occupied {
-            possible_starts.push(earliest);
+        match occupied.first() {
+            Some(first) if earliest + tdelay <= first.0 => possible_starts.push(earliest),
+            None => possible_starts.push(earliest),
+            _ => (),
         }
 
         if let Some(last) = occupied.last() {
-            if last.1 + tdelay <= self.period {
+            if _mod(last.1, self.period) + tdelay <= self.period {
                 possible_starts.push(last.1);
             }
         }
 
+        // 此处使用基数排序，时间复杂度为O(n)
         radsort::sort(&mut possible_starts);
         possible_starts.dedup();
 
@@ -339,22 +321,16 @@ impl<'a> Flow<'a> {
         let &found = possible_starts
             .iter()
             .find(|&start| {
-                let slots: SmallVec<[_; 128]> = (0..max_time / self.period)
+                let n = (max_time / self.period) as usize;
+                let slots: SmallVec<[_; 128]> = (0..macro_time / self.period)
                     .map(|i| i * self.period + start)
                     .map(|start| (start, start + tdelay))
                     .collect();
 
-                let ok = !conflict_with(&slots, &occupied);
+                let ok = !conflict_with(&slots[..n], &occupied);
+                // 将找到的最小可行解归并到已占用时间槽列表中
                 if ok {
-                    if macro_time != max_time {
-                        let slots: SmallVec<[_; 128]> = (0..macro_time / self.period)
-                            .map(|i| i * self.period + start)
-                            .map(|start| (start, start + tdelay))
-                            .collect();
-                        link.merge_slots(&slots, sequence);
-                    } else {
-                        link.merge_slots(&slots, sequence);
-                    }
+                    link.merge_slots(&slots, sequence);
                 }
                 ok
             })
@@ -704,4 +680,13 @@ fn lcm_all(it: impl Iterator<Item = u64>) -> u64 {
         acc = (acc * n) / gcd(acc, n);
     }
     acc
+}
+
+#[inline]
+fn _mod(a: u64, b: u64) -> u64 {
+    if a < b {
+        a
+    } else {
+        a % b
+    }
 }

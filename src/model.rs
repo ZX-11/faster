@@ -547,7 +547,7 @@ impl<'a> PreGraph<'a> {
 //     false
 // }
 
-// 结合双指针和二分查找，时间复杂度为O(n + log m)
+// 结合双指针和二分查找，时间复杂度为O(n * log m)
 fn conflict_with(slots: &[(u64, u64)], occupied: &[(u64, u64)]) -> bool {
     let mut i = 0;
     let mut j = 0;
@@ -563,7 +563,7 @@ fn conflict_with(slots: &[(u64, u64)], occupied: &[(u64, u64)]) -> bool {
                 return false;
             }
             // 使用二分查找找到第一个 e2 > s1 的项
-            j += 1 + match occupied[j + 1..].binary_search_by(|&(_, e)| e.cmp(&s1)) {
+            j += 1 + match occupied[j + 1..].binary_search_by_key(&s1, |&(_, e)| e) {
                 Ok(pos) => pos + 1,
                 Err(pos) => pos,
             };

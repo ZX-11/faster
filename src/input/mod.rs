@@ -5,13 +5,12 @@ pub mod json;
 const HELP: &str = r#"Usage: faster [OPTIONS]
 
 Options:
-  --input-inet <file>        Specify the input file for the INET input type.
-  --sequence <seq>           Specify a sequence in json, can only be used after --input-inet.
-  --input-json <file>        Specify the input file for the JSON input type.
+  --input-inet <file> [sequence]           Specify the input file for the INET input type and sequence.
+  --input-json <file>                      Specify the input file for the JSON input type.
   --input-fast <device> <flow> <flowlink>  Specify device, flow, and flowlink files for the FAST input type.
-  --output-inet <file>       Specify the output file for the INET output type. Must be used after --input-inet.
-  --output-console           Output to the console.
-  --help                     Display this help message."#;
+  --output-inet <file>                     Specify the output file for the INET output type. Must be used after --input-inet.
+  --output-console                         Output to the console.
+  --help                                   Display this help message."#;
 
 #[macro_export]
 macro_rules! process_input {

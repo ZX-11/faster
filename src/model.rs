@@ -559,10 +559,13 @@ fn conflict_with(slots: &[(u64, u64)], occupied: &[(u64, u64)]) -> bool {
         if e1 <= s2 {
             i += 1;
         } else if e2 <= s1 {
-            // 使用二分查找找到第一个 occupied[k] 满足 occupied[k].start >= slots[i].start
-            j += match occupied[j + 1..].binary_search_by(|&(start, _)| start.cmp(&s1)) {
-                Ok(k) => 1 + k,
-                Err(k) => 1 + k,
+            if j + 1 >= occupied.len() {
+                return false;
+            }
+            // 使用二分查找找到第一个 e2 > s1 的项
+            j += 1 + match occupied[j + 1..].binary_search_by(|&(_, e)| e.cmp(&s1)) {
+                Ok(pos) => pos + 1,
+                Err(pos) => pos,
             };
         } else {
             return true;
@@ -614,7 +617,7 @@ pub fn sort_hops(hops: &FxHashSet<LinkID>) -> (Vec<LinkID>, FxHashMap<LinkID, Ve
             if pred_to == from {
                 predecessors
                     .entry((*from, *to))
-                    .or_insert_with(Vec::new)
+                    .or_default()
                     .push((*pred_from, *pred_to));
             }
         }

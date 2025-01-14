@@ -5,7 +5,7 @@ pub mod json;
 const HELP: &str = r#"Usage: faster [OPTIONS]
 
 Options:
-  --input-inet <file> [sequence]           Specify the input file for the INET input type and sequence.
+  --input-inet <file> <sequence>           Specify the input file for the INET input type and sequence(use - to ignore sequence).
   --input-json <file>                      Specify the input file for the JSON input type.
   --input-fast <device> <flow> <flowlink>  Specify device, flow, and flowlink files for the FAST input type.
   --output-inet <file>                     Specify the output file for the INET output type. Must be used after --input-inet.
@@ -47,7 +47,7 @@ pub fn parse_args<'a>(
         match arg {
             "--input-inet" => {
                 let filename = args.next().ok_or("Missing input file for --input-inet")?;
-                let sequence = args.next().unwrap_or("");
+                let sequence = args.next().ok_or("Missing sequence file for --input-inet")?;
                 input_type = Some(InputType::inet((filename, sequence)));
             }
             "--input-json" => {

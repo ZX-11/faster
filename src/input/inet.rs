@@ -108,7 +108,7 @@ fn get_sequence(seq: &Sequence, id: Ustr) -> u32 {
 pub fn process((filename, sequence): (&str, &str)) -> &'static ProcessedInput {
     let mut input: Config = json5::from_str(&std::fs::read_to_string(filename).unwrap()).unwrap();
     let seq: Sequence = match sequence {
-        "" => Default::default(),
+        "-" => Default::default(),
         _ => serde_json::from_slice(&std::fs::read(sequence).unwrap()).unwrap(),
     };
     let p = init_processed_input();

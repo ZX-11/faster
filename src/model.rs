@@ -10,7 +10,7 @@ use std::{
     collections::VecDeque,
     u32,
 };
-use ustr::{Ustr, UstrMap};
+use ustr::{Ustr, UstrMap, UstrSet};
 
 type FxIndexMap<K, V> = indexmap::IndexMap<K, V, FxBuildHasher>;
 
@@ -387,16 +387,7 @@ impl<'a> Flow<'a> {
         let mut remaining_edges: FxHashSet<LinkID> = graph.iter().cloned().collect();
 
         // 找出出度为0的节点队列
-        let mut zero_out_nodes: SmallVec<[Ustr; 32]> = out_degree
-            .iter()
-            .filter_map(|(node, &degree)| {
-                if degree == 0 {
-                    Some(node.clone())
-                } else {
-                    None
-                }
-            })
-            .collect();
+        let mut zero_out_nodes: SmallVec<[Ustr; 32]> = end_nodes(&graph).iter().cloned().collect();
 
         while !zero_out_nodes.is_empty() {
             let current_zero_out_nodes = zero_out_nodes;
@@ -466,6 +457,22 @@ impl<'a> Flow<'a> {
 
         self
     }
+}
+
+fn end_nodes(edges: &[(Ustr, Ustr)]) -> UstrSet {
+    let mut neighbors: UstrMap<UstrSet> = UstrMap::default();
+
+    // 构建每个节点的邻居集合
+    for (start, end) in edges {
+        neighbors.entry(*start).or_default().insert(*end);
+        neighbors.entry(*end).or_default().insert(*start);
+    }
+
+    neighbors
+        .iter()
+        .filter(|(_, v)| v.len() == 1)
+        .map(|(k, _)| *k)
+        .collect()
 }
 
 impl<'a> PartialEq for Flow<'a> {

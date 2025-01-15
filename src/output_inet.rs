@@ -178,10 +178,12 @@ pub fn output(filename: &str) {
                     } else {
                         occupied[i + 1].0
                     };
-                    free.push(SlotsData {
-                        slot_start: start as f64 / 1_000.0,
-                        slot_duration: (end - start) as f64 / 1_000.0,
-                    });
+                    if end > start {
+                        free.push(SlotsData {
+                            slot_start: start as f64 / 1_000.0,
+                            slot_duration: (end - start) as f64 / 1_000.0,
+                        });
+                    }
                 }
             } else {
                 free.push(SlotsData {

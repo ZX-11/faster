@@ -43,12 +43,11 @@ pub fn processed_input() -> &'static ProcessedInput {
     unsafe { (&*std::ptr::addr_of!(PROCESSED_INPUT)).as_ref().unwrap() }
 }
 
-// macro_rules! merge_slots {
-//     ($vec:expr) => {{
-//         let length = crate::model::merge_slots($vec.as_mut_slice());
-//         $vec.truncate(length);
-//     }};
-// }
+macro_rules! new {
+    () => {
+        Default::default()
+    };
+}
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Device {
@@ -80,7 +79,6 @@ impl Link {
     fn merge_slots(&self, slots: &[(u64, u64)], sequence: u32) {
         let occupied = self.occupied().entry(sequence).or_default();
 
-        // Early return if occupied is empty
         if occupied.is_empty() {
             *occupied = slots.to_vec();
             return;
@@ -90,7 +88,6 @@ impl Link {
         let mut i = 0;
         let mut j = 0;
 
-        // Merge the two sorted lists
         while i < occupied.len() && j < slots.len() {
             unsafe {
                 match (
@@ -359,7 +356,7 @@ impl<'a> Flow<'a> {
     }
 
     pub fn generate_remain_min_delay_p2p(mut self) -> Self {
-        let mut result: FxHashMap<LinkID, u64> = Default::default();
+        let mut result: FxHashMap<LinkID, u64> = new!();
         let mut acc = 0;
         for link in self.links.values().rev() {
             result.insert(link.id, acc);
@@ -372,8 +369,8 @@ impl<'a> Flow<'a> {
     pub fn generate_remain_min_delay(mut self, links: &FxHashMap<LinkID, Link>) -> Self {
         // 预构建入边映射和出度映射
         let graph = self.links.values().map(|l| l.id).collect::<Vec<_>>();
-        let mut in_edges: UstrMap<SmallVec<[LinkID; 16]>> = Default::default();
-        let mut out_degree: UstrMap<usize> = Default::default();
+        let mut in_edges: UstrMap<Vec<LinkID>> = new!();
+        let mut out_degree: UstrMap<usize> = new!();
 
         // 构建入边映射和出度映射
         for &edge @ (from, to) in &graph {
@@ -383,15 +380,15 @@ impl<'a> Flow<'a> {
         }
 
         // 初始化结果映射和待处理边集
-        let mut result: FxHashMap<LinkID, u64> = Default::default();
+        let mut result: FxHashMap<LinkID, u64> = new!();
         let mut remaining_edges: FxHashSet<LinkID> = graph.iter().cloned().collect();
 
         // 找出出度为0的节点队列
-        let mut zero_out_nodes: SmallVec<[Ustr; 32]> = end_nodes(&graph).iter().cloned().collect();
+        let mut zero_out_nodes = end_nodes(&graph);
 
         while !zero_out_nodes.is_empty() {
             let current_zero_out_nodes = zero_out_nodes;
-            zero_out_nodes = SmallVec::new();
+            zero_out_nodes = Vec::new();
 
             for node in current_zero_out_nodes {
                 // 处理指向该节点的入边
@@ -440,7 +437,7 @@ impl<'a> Flow<'a> {
             return self;
         }
 
-        let mut end_map: UstrMap<SmallVec<[LinkID; 16]>> = Default::default();
+        let mut end_map: UstrMap<Vec<LinkID>> = new!();
 
         for hop in self.links.values().map(|l| l.id) {
             end_map.entry(hop.0).or_default().push(hop);
@@ -459,19 +456,21 @@ impl<'a> Flow<'a> {
     }
 }
 
-fn end_nodes(edges: &[(Ustr, Ustr)]) -> UstrSet {
-    let mut neighbors: UstrMap<UstrSet> = UstrMap::default();
+fn end_nodes(links: &[LinkID]) -> Vec<Ustr> {
+    let mut neighbors: UstrMap<UstrSet> = new!();
+    let mut indegree: UstrMap<u32> = new!();
 
-    // 构建每个节点的邻居集合
-    for (start, end) in edges {
-        neighbors.entry(*start).or_default().insert(*end);
-        neighbors.entry(*end).or_default().insert(*start);
+    for &(from, to) in links {
+        neighbors.entry(from).or_default().insert(to);
+        neighbors.entry(to).or_default().insert(from);
+        *indegree.entry(to).or_default() += 1;
     }
 
     neighbors
-        .iter()
+        .into_iter()
         .filter(|(_, v)| v.len() == 1)
-        .map(|(k, _)| *k)
+        .map(|(k, _)| k)
+        .filter(|k| indegree.get(k) == Some(&1))
         .collect()
 }
 
@@ -583,12 +582,12 @@ fn conflict_with(slots: &[(u64, u64)], occupied: &[(u64, u64)]) -> bool {
 
 pub fn sort_hops(hops: &FxHashSet<LinkID>) -> (Vec<LinkID>, FxHashMap<LinkID, Vec<LinkID>>) {
     // 构建图的邻接表和入度表
-    let mut adjacency_list: UstrMap<Vec<Ustr>> = Default::default();
-    let mut in_degree: UstrMap<usize> = Default::default();
-    let mut predecessors: FxHashMap<LinkID, Vec<LinkID>> = Default::default();
+    let mut adjacency_list: UstrMap<Vec<Ustr>> = new!();
+    let mut in_degree: UstrMap<usize> = new!();
+    let mut predecessors: FxHashMap<LinkID, Vec<LinkID>> = new!();
 
     for &(from, to) in hops {
-        adjacency_list.entry(from).or_insert_with(Vec::new).push(to);
+        adjacency_list.entry(from).or_default().push(to);
         *in_degree.entry(to).or_insert(0) += 1;
         in_degree.entry(from).or_insert(0);
     }

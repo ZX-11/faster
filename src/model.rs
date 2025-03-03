@@ -182,7 +182,7 @@ impl<'a> Flow<'a> {
 
     pub fn calculate_urgency(&self, link: &'a Link) -> Option<u64> {
         let total_delay =
-            self.sfdelay(link) + self.accdelay(link) + self.remain_min_delay[&link.id];
+            self.sfdelay(link) + self.accdelay(link) + self.remain_min_delay[&link.id] - self.start_offset.get();
 
         match self.max_latency as i64 - total_delay as i64 {
             x if x < 0 => None,

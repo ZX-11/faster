@@ -191,7 +191,7 @@ fn main() {
                         .collect();
 
                     // 按紧急程度排序
-                    flows_to_sched.sort_unstable_by_key(|(_, urgency)| *urgency);
+                    flows_to_sched.sort_by_key(|(_, urgency)| *urgency);
 
                     // 依次调度，返回调度后的最大offset
                     flows_to_sched

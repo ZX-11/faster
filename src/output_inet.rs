@@ -107,6 +107,20 @@ pub fn output(filename: &str) {
 
     // flow_offset[flow_name][from][port] = offset
     let mut flow_offset: UstrMap<UstrMap<FxHashMap<u32, u64>>> = UstrMap::default();
+    let mut last_slot_end = 0;
+
+    for (id, flow) in &p.flows {
+        for ((from, _), offset) in flow.link_offsets() {
+            if p.devices[&from].end_device {
+                flow_offset
+                .entry(*id)
+                .or_default()
+                .entry(*from)
+                .or_default()
+                .insert(0, *offset);
+            }
+        }
+    }
 
     // 处理交换机和端口信息
     for switch in &input.switches {
@@ -142,6 +156,7 @@ pub fn output(filename: &str) {
                 priority_slots_data.push(PrioritySlotsData {
                     slots_data: merge_slots(slots.clone())
                         .into_iter()
+                        .inspect(|&(start, duration)| last_slot_end = last_slot_end.max(start + duration))
                         .map(|(start, duration)| SlotsData {
                             slot_start: start as f64 / 1_000.0,
                             slot_duration: duration as f64 / 1_000.0,
@@ -164,11 +179,13 @@ pub fn output(filename: &str) {
 
             let mut free = Vec::with_capacity(occupied.len() + 1);
 
+            let protect = 1000;
+
             if occupied.len() > 0 {
-                if occupied[0].0 != 0 {
+                if occupied[0].0 > protect {
                     free.push(SlotsData {
                         slot_start: 0.0,
-                        slot_duration: occupied[0].0 as f64 / 1_000.0,
+                        slot_duration: (occupied[0].0 - protect) as f64 / 1_000.0,
                     });
                 }
                 for i in 0..occupied.len() {
@@ -178,10 +195,10 @@ pub fn output(filename: &str) {
                     } else {
                         occupied[i + 1].0
                     };
-                    if end > start {
+                    if end > start + protect {
                         free.push(SlotsData {
                             slot_start: start as f64 / 1_000.0,
-                            slot_duration: (end - start) as f64 / 1_000.0,
+                            slot_duration: (end - start - protect) as f64 / 1_000.0,
                         });
                     }
                 }
@@ -226,6 +243,7 @@ pub fn output(filename: &str) {
     output_file(serde_json::to_string_pretty, &output, filename).unwrap();
     output_file(serde_json::to_string_pretty, &flow_offset, "flow-offset.json").unwrap();
     output_file(serde_json::to_string_pretty, &flow_period, "flow-period.json").unwrap();
+    println!("Cycle completion offset: {} ns", last_slot_end);
 }
 
 fn output_file<S, T, E>(

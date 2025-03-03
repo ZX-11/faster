@@ -40,7 +40,7 @@ cargo build --release
 ### INET 输入模式
 
 ```bash
-./faster --input-inet <input-file> [--sequence <sequence-file>] --output-inet <output-file>
+./faster --input-inet <input-file> <sequence-file> --output-inet <output-file>
 ```
 
 ### FAST 输入模式

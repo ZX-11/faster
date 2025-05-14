@@ -3,21 +3,28 @@ extern crate derive_deref;
 
 use fxhash::{FxHashMap, FxHashSet};
 use input::*;
-use model::{Network, PreGraph, ProcessedInput, Route};
+use model::{
+    processed_input, Flow, FlowID, LinkID, Network, PreGraph, ProcessedInput, Route, RouteID,
+};
 use petgraph::{
-    algo::{is_cyclic_directed, tarjan_scc},
+    algo::tarjan_scc,
+    graph::{EdgeIndex, NodeIndex},
     prelude::StableGraph,
     Direction::Outgoing,
 };
 use smallvec::SmallVec;
-use std::collections::BTreeMap;
-use ustr::UstrMap;
+use std::{collections::BTreeMap, process::exit};
+use ustr::{UstrMap, UstrSet};
 
 mod input;
 mod model;
 mod output_inet;
 
-const END_BREAKLOOP: bool = false;
+const END_BREAKLOOP: bool = true;
+
+fn no_seq(sequence: u32) -> bool {
+    sequence == u32::MAX
+}
 
 fn main() {
     let args: SmallVec<[String; 8]> = std::env::args().collect();
@@ -25,7 +32,7 @@ fn main() {
     let (input_type, output_type) = parse_args(args.iter().map(AsRef::as_ref).skip(1))
         .unwrap_or_else(|e| {
             eprintln!("Arguement error:\n\t{}\nUse --help for more information", e);
-            std::process::exit(1);
+            std::process::exit(-1);
         });
 
     let ProcessedInput {
@@ -65,8 +72,6 @@ fn main() {
     let mut start_offset = 0;
 
     for (sequence, seq_flows) in flow_sequence {
-        let no_seq = sequence == u32::MAX;
-
         // 构建先序关系图
         let mut pre_graph = PreGraph::default();
 
@@ -80,7 +85,8 @@ fn main() {
 
         for flow in seq_flows.values() {
             // 为流设置最早起始时间
-            flow.start_offset.set(if no_seq { 0 } else { start_offset });
+            flow.start_offset
+                .set(if no_seq(sequence) { 0 } else { start_offset });
 
             for route @ (hop, next_hop) in &flow.routes {
                 route_id.insert(
@@ -96,136 +102,43 @@ fn main() {
             }
         }
 
-        let mut breakloop = Vec::new();
+        // let mut breakloop = Vec::new();
+        let mut breakloop_flows = UstrSet::default();
 
-        while pre_graph.node_count() != 0 {
-            // 找到所有入度为0的节点
-            let queue: SmallVec<[_; 64]> = pre_graph
-                .node_indices()
-                .filter(|node| {
-                    pre_graph
-                        .neighbors_directed(*node, petgraph::Incoming)
-                        .count()
-                        == 0
-                })
-                .map(|node| pre_graph[node])
-                .collect();
+        schedule_pre_graph(
+            Context {
+                sequence,
+                seq_flows: &seq_flows,
+                link_id: &link_id,
+                route_id: &route_id,
+                route_flows: &route_flows,
+            },
+            &mut start_offset,
+            pre_graph,
+            &mut breakloop_flows,
+        );
 
-            if queue.is_empty() {
-                if END_BREAKLOOP {
-                    let mut urgency = Vec::with_capacity(seq_flows.len());
-                    urgency.extend(seq_flows.values().filter(|flow| !flow.schedule_done.get()).map(
-                        |&flow| {
-                            (
-                                flow,
-                                flow.calculate_urgency(flow.first_unscheduled_link())
-                                    .unwrap(),
-                            )
-                        },
-                    ));
-                    urgency.sort_unstable_by_key(|(_, urgency)| *urgency);
+        let mut breakloop: Vec<_> = breakloop_flows
+            .into_iter()
+            .filter_map(|id| {
+                let flow = &flows[&id];
+                flow.calculate_urgency(flow.first_unscheduled_link()).map(|urgency| (flow, urgency))
+            })
+            .collect();
 
-                    while is_cyclic_directed(&pre_graph.graph) {
-                        // 选择紧急度最低的流进行破环
-                        let blp @ (flow, _) = urgency.pop().unwrap();
-
-                        // 记录被破环的流
-                        breakloop.push(blp);
-
-                        // 执行破环
-                        pre_graph.breakloop(flow, &route_id);
-                    }
-                } else {
-                    // 循环直到图中没有环
-                    while let Some(cycle_edges) = find_cycle_edges(&pre_graph.graph) {
-                        // 找到所有造成环的边，统计每个流包含的环边数量
-                        let mut flow_to_cycle_edge_count = UstrMap::default();
-                        flow_to_cycle_edge_count.reserve(seq_flows.len());
-
-                        for edge in &cycle_edges {
-                            for flow in route_flows[edge].iter().filter(|f| !f.breakloop.get()) {
-                                *flow_to_cycle_edge_count.entry(flow.id).or_insert(0u32) += 1;
-                            }
-                        }
-
-                        // 选择被破环的流
-                        let flow = flow_to_cycle_edge_count
-                            .iter()
-                            .max_by_key(|(_, count)| *count)
-                            .map(|(id, _)| &flows[id])
-                            .unwrap();
-
-                        // 记录破环的流
-                        breakloop.push((
-                            flow,
-                            flow.calculate_urgency(flow.first_unscheduled_link())
-                                .unwrap(),
-                        ));
-
-                        // 执行破环操作
-                        pre_graph.breakloop(flow, &route_id);
-                    }
-
-                    breakloop.sort_unstable_by_key(|(_, urgency)| *urgency);
-
-                    for (f, _) in breakloop.iter() {
-                        for link in f.links.values().filter(|l| !f.scheduled_link(l)) {
-                            start_offset = start_offset.max(f.schedule_link(flows.values(), link, sequence));
-                        }
-                    }
-
-                    // 清空破环列表，准备下一轮处理
-                    breakloop.clear();
-                }
-            } else {
-                let schedule_link = |link: &&model::Link| {
-                    // 获取当前链路待调度的流
-                    let mut flows_to_sched: SmallVec<[_; 64]> = link
-                        .flows
-                        .iter()
-                        .map(|f| &flows[f])
-                        .filter(|f| {
-                            seq_flows.contains_key(&f.id) && !f.schedule_done.get() && !f.breakloop.get()
-                        })
-                        .map(|f| (f, f.calculate_urgency(link).unwrap()))
-                        .collect();
-
-                    // 按紧急程度排序
-                    flows_to_sched.sort_by_key(|(_, urgency)| *urgency);
-
-                    // 依次调度，返回调度后的最大offset
-                    flows_to_sched
-                        .iter()
-                        .map(|(flow, _)| *flow)
-                        .map(|f| {
-                            if no_seq {
-                                f.schedule_link(flows.values(), link, sequence)
-                            } else {
-                                f.schedule_link(seq_flows.values(), link, sequence)
-                            }
-                        })
-                        .max()
-                        .unwrap_or(0)
-                };
-
-                start_offset = start_offset.max(queue.iter().map(schedule_link).max().unwrap_or(0));
-
-                // 移除已处理的节点
-                for link in &queue {
-                    pre_graph.remove_node(link_id[&link.id]);
-                }
-            }
-        }
+        breakloop.sort_by_key(|(_, u)| *u);
 
         if END_BREAKLOOP {
             // 按照紧急程度调度
-            for (f, _) in breakloop.iter().rev() {
+            for (f, _) in breakloop.iter() {
                 for link in f.links.values().filter(|l| !f.scheduled_link(l)) {
-                    start_offset = start_offset.max(if no_seq {
-                        f.schedule_link(flows.values(), link, sequence)
-                    } else {
-                        f.schedule_link(seq_flows.values(), link, sequence)
-                    });
+                    match match no_seq(sequence) {
+                        true => f.schedule_link(flows.values(), link, sequence),
+                        false => f.schedule_link(seq_flows.values(), link, sequence),
+                    } {
+                        Some(result) => start_offset = start_offset.max(result),
+                        None => break,
+                    }
                 }
             }
         }
@@ -242,25 +155,223 @@ fn main() {
             }
         }
     }
+
+    let failed_count = flows.values().filter(|f| f.schedule_fail.get()).count();
+    if failed_count != 0 {
+        eprintln!("{}", failed_count);
+        exit(failed_count as i32);
+    }
 }
 
-fn find_cycle_edges(graph: &StableGraph<&model::Link, Route>) -> Option<FxHashSet<model::RouteID>> {
+struct Context<'a> {
+    sequence: u32,
+    seq_flows: &'a UstrMap<&'static Flow<'static>>,
+    link_id: &'a FxHashMap<LinkID, NodeIndex>,
+    route_id: &'a FxHashMap<(FlowID, RouteID), EdgeIndex>,
+    route_flows: &'a FxHashMap<RouteID, Vec<&'static Flow<'static>>>,
+}
+
+fn schedule_pre_graph(
+    ctx: Context<'_>,
+    start_offset: &mut u64,
+    mut pre_graph: PreGraph<'_>,
+    breakloop_flows: &mut UstrSet,
+) {
+    let ProcessedInput {
+        // devices,
+        links,
+        flows,
+        ..
+    } = processed_input();
+
+    while pre_graph.node_count() != 0 {
+        // 找到所有入度为0的节点
+        let queue: SmallVec<[_; 64]> = pre_graph
+            .node_indices()
+            .filter(|node| {
+                pre_graph
+                    .neighbors_directed(*node, petgraph::Incoming)
+                    .count()
+                    == 0
+            })
+            .map(|node| pre_graph[node])
+            .collect();
+
+        if queue.is_empty() {
+            for blp in breakloop_points(&*pre_graph) {
+                let mut breakloop_flows_inner = UstrSet::default();
+
+                let breakloop = ctx.route_flows[&blp]
+                    .iter()
+                    .filter(|f| !f.schedule_done.get())
+                    .filter(|f| breakloop_flows.insert(f.id) || !END_BREAKLOOP)
+                    .inspect(|f| {
+                        breakloop_flows_inner.insert(f.id);
+                    });
+
+                if END_BREAKLOOP {
+                    for flow in breakloop {
+                        pre_graph.breakloop(flow, &ctx.route_id);
+                    }
+                } else {
+                    let breakloop: SmallVec<[_; 16]> = breakloop.collect();
+
+                    let mut pre_graph_inner = PreGraph::default();
+
+                    let mut link_id_inner = FxHashMap::default();
+
+                    let mut route_id_inner = FxHashMap::default();
+
+                    let mut route_flows_inner = FxHashMap::default();
+
+                    for flow in &breakloop {
+                        for route @ (from, to) in &flow.routes {
+                            if !flow.scheduled_link_id(from) {
+                                link_id_inner
+                                    .entry(*from)
+                                    .or_insert_with(|| pre_graph_inner.add_node(&links[from]));
+                                link_id_inner
+                                    .entry(*to)
+                                    .or_insert_with(|| pre_graph_inner.add_node(&links[to]));
+
+                                route_id_inner.insert(
+                                    (flow.id, *route),
+                                    pre_graph_inner.add_edge(
+                                        link_id_inner[from],
+                                        link_id_inner[to],
+                                        Route { id: *route },
+                                    ),
+                                );
+
+                                route_flows_inner
+                                    .entry(*route)
+                                    .or_insert_with(Vec::new)
+                                    .push(**flow);
+                            }
+                        }
+                        pre_graph.breakloop(flow, &ctx.route_id);
+                    }
+
+                    schedule_pre_graph(
+                        Context {
+                            link_id: &link_id_inner,
+                            route_id: &route_id_inner,
+                            route_flows: &route_flows_inner,
+                            seq_flows: &breakloop.iter().map(|f| (f.id, **f)).collect(),
+                            ..ctx
+                        },
+                        start_offset,
+                        pre_graph_inner,
+                        &mut breakloop_flows_inner,
+                    );
+
+                    for flow in &breakloop {
+                        breakloop_flows.remove(&flow.id);
+                    }
+                }
+            }
+        } else {
+            let schedule_link = |link: &&model::Link| {
+                // 获取当前链路待调度的流
+                let mut flows_to_sched: SmallVec<[_; 64]> = link
+                    .flows
+                    .iter()
+                    .map(|f| &flows[f])
+                    .filter(|f| match (breakloop_flows.is_empty(), END_BREAKLOOP) {
+                        (false, false) => {
+                            ctx.seq_flows.contains_key(&f.id) && !f.schedule_done.get() && !f.schedule_fail.get()
+                        }
+                        _ => {
+                            ctx.seq_flows.contains_key(&f.id)
+                                && !f.schedule_done.get()
+                                && !f.breakloop.get()
+                                && !f.schedule_fail.get()
+                        }
+                    })
+                    .filter_map(|f|
+                        f.calculate_urgency(link).map(|urgency| (f, urgency))
+                    )
+                    .collect();
+
+                // 按紧急程度排序
+                radsort::sort_by_key(&mut flows_to_sched, |(_, urgency)| *urgency);
+
+                // 依次调度，返回调度后的最大offset
+                flows_to_sched
+                    .iter()
+                    .map(|(flow, _)| *flow)
+                    .filter_map(|f| {
+                        if no_seq(ctx.sequence) {
+                            f.schedule_link(flows.values(), link, ctx.sequence)
+                        } else {
+                            f.schedule_link(ctx.seq_flows.values(), link, ctx.sequence)
+                        }
+                    })
+                    .max()
+                    .unwrap_or(0)
+            };
+
+            *start_offset =
+                *start_offset.max(&mut queue.iter().map(schedule_link).max().unwrap_or(0));
+
+            // 移除已处理的节点
+            for link in &queue {
+                pre_graph.remove_node(ctx.link_id[&link.id]);
+            }
+        }
+    }
+}
+
+fn breakloop_points(graph: &StableGraph<&model::Link, Route>) -> Vec<RouteID> {
     let sccs = tarjan_scc(graph); // 使用 Tarjan 算法找到所有强连通分量
-    let mut cycle_edges = FxHashSet::default();
+
+    let mut results = Vec::new();
 
     for scc in sccs.into_iter().filter(|scc| scc.len() > 1) {
+        let scc = FxHashSet::from_iter(scc);
+        // 收集所有边及其权重（平行边数量）
+        let mut edges = FxHashMap::default();
         for &node_i in &scc {
             for node_j in graph.neighbors_directed(node_i, Outgoing) {
                 if scc.contains(&node_j) {
-                    cycle_edges.insert((graph[node_i].id, graph[node_j].id));
+                    let edge = if node_i < node_j {
+                        (node_i, node_j)
+                    } else {
+                        (node_j, node_i)
+                    };
+                    *edges.entry(edge).or_insert(0) += 1;
+                }
+            }
+        }
+
+        let mut edges: Vec<_> = edges.into_iter().collect();
+
+        // 按权重排序
+        radsort::sort_by_key(&mut edges, |(_, w)| -w);
+
+        // Kruskal计算最大生成树
+        let mut uf = petgraph::unionfind::UnionFind::new(graph.capacity().0);
+        let mut mst_edges = FxHashSet::default();
+
+        for ((u, v), _) in &edges {
+            if uf.union(u.index(), v.index()) {
+                mst_edges.insert((u, v));
+            }
+        }
+
+        // 将非最大生成树边加入结果
+        for ((u, v), _) in &edges {
+            if !mst_edges.contains(&(u, v)) && !mst_edges.contains(&(v, u)) {
+                if graph[*u].id.1 == graph[*v].id.0 {
+                    results.push((graph[*u].id, graph[*v].id));
+                } else if graph[*u].id.0 == graph[*v].id.1 {
+                    results.push((graph[*v].id, graph[*u].id));
+                } else {
+                    unreachable!();
                 }
             }
         }
     }
 
-    if cycle_edges.is_empty() {
-        None
-    } else {
-        Some(cycle_edges)
-    }
+    results
 }

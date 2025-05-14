@@ -68,7 +68,7 @@ pub fn process((device, flow, flowlink): (&str, &str, &str)) -> &'static Process
 
         for (id, hops) in &flow_hops {
             for h in hops {
-                p.links.get_mut(h).unwrap().flows.push(*id);
+                p.links.get_mut(h).expect(&format!("Link ({}, {}) do not exists", h.0, h.1)).flows.push(*id);
             }
         }
     }

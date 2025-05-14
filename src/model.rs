@@ -12,7 +12,7 @@ use std::{
 };
 use ustr::{Ustr, UstrMap, UstrSet};
 
-type FxIndexMap<K, V> = indexmap::IndexMap<K, V, FxBuildHasher>;
+pub type FxIndexMap<K, V> = indexmap::IndexMap<K, V, FxBuildHasher>;
 
 pub type FlowID = Ustr;
 pub type LinkID = (Ustr, Ustr);
@@ -76,7 +76,7 @@ impl Link {
         unsafe { self.occupied.get().as_mut().unwrap_unchecked() }
     }
 
-    fn merge_slots(&self, slots: &[(u64, u64)], sequence: u32) {
+    fn merge_slots(&self, slots: &[(u64, u64)], sequence: u32, min_gap: u64) {
         let occupied = self.occupied().entry(sequence).or_default();
 
         if occupied.is_empty() {
@@ -95,11 +95,11 @@ impl Link {
                     slots.get_unchecked(j),
                     new.last_mut(),
                 ) {
-                    (x, _, Some(last)) if last.1 == x.0 => {
+                    (x, _, Some(last)) if last.1 + min_gap >= x.0 => {
                         last.1 = x.1;
                         i += 1;
                     }
-                    (_, y, Some(last)) if last.1 == y.0 => {
+                    (_, y, Some(last)) if last.1 + min_gap >= y.0 => {
                         last.1 = y.1;
                         j += 1;
                     }
@@ -115,23 +115,21 @@ impl Link {
             }
         }
 
-        let last = new.last_mut().unwrap();
+        let mut remaining = |idx: usize, list: &[(u64, u64)]| {
+            if idx < list.len() {
+                let last = new.last_mut().unwrap();
 
-        if i < occupied.len() {
-            if occupied[i].0 == last.1 {
-                last.1 = occupied[i].1;
-                new.extend_from_slice(&occupied[i + 1..]);
-            } else {
-                new.extend_from_slice(&occupied[i..]);
+                if list[idx].0 == last.1 {
+                    last.1 = list[idx].1;
+                    new.extend_from_slice(&list[idx + 1..]);
+                } else {
+                    new.extend_from_slice(&list[idx..]);
+                }
             }
-        } else if j < slots.len() {
-            if slots[j].0 == last.1 {
-                last.1 = slots[j].1;
-                new.extend_from_slice(&slots[j + 1..]);
-            } else {
-                new.extend_from_slice(&slots[j..]);
-            }
-        }
+        };
+
+        remaining(i, occupied);
+        remaining(j, slots);
 
         *occupied = new;
     }
@@ -160,6 +158,7 @@ pub struct Flow<'a> {
     pub link_offsets: UnsafeCell<FxHashMap<LinkID, u64>>,
     pub start_offset: Cell<u64>,
     pub schedule_done: Cell<bool>,
+    pub schedule_fail: Cell<bool>,
     pub breakloop: Cell<bool>,
 }
 
@@ -182,10 +181,14 @@ impl<'a> Flow<'a> {
 
     pub fn calculate_urgency(&self, link: &'a Link) -> Option<u64> {
         let total_delay =
-            self.sfdelay(link) + self.accdelay(link) + self.remain_min_delay[&link.id] - self.start_offset.get();
+            self.sfdelay(link) + self.accdelay(link) + self.remain_min_delay[&link.id]
+                - self.start_offset.get();
 
         match self.max_latency as i64 - total_delay as i64 {
-            x if x < 0 => None,
+            x if x < 0 => {
+                self.schedule_fail.set(true);
+                None
+            }
             x => Some(x as u64),
         }
     }
@@ -220,6 +223,11 @@ impl<'a> Flow<'a> {
         self.link_offsets().contains_key(&link.id)
     }
 
+    #[inline]
+    pub fn scheduled_link_id(&self, link: &LinkID) -> bool {
+        self.link_offsets().contains_key(link)
+    }
+
     pub fn first_unscheduled_link(&self) -> &'a Link {
         self.links
             .values()
@@ -233,7 +241,7 @@ impl<'a> Flow<'a> {
         flows: impl Iterator<Item = impl AsRef<Flow<'a>>>,
         link: &'a Link,
         sequence: u32,
-    ) -> u64 {
+    ) -> Option<u64> {
         let earliest = self.accdelay(link) + self.pdelay(link);
 
         // 计算已调度最大周期
@@ -285,6 +293,8 @@ impl<'a> Flow<'a> {
 
         let tdelay = self.tdelay(link);
 
+        let min_gap = 512000 / link.speed;
+
         // 找到所有待检测解并排序去重
         let mut possible_starts: SmallVec<[_; 512]> = occupied
             .iter()
@@ -298,11 +308,7 @@ impl<'a> Flow<'a> {
             })
             .collect();
 
-        match occupied.first() {
-            Some(first) if earliest + tdelay <= first.0 => possible_starts.push(earliest),
-            None => possible_starts.push(earliest),
-            _ => (),
-        }
+        possible_starts.push(earliest);
 
         if let Some(last) = occupied.last() {
             if _mod(last.1, self.period) + tdelay <= self.period {
@@ -315,33 +321,36 @@ impl<'a> Flow<'a> {
         possible_starts.dedup();
 
         // 找到最小可行解
-        let &found = possible_starts
-            .iter()
-            .find(|&start| {
-                let n = (max_time / self.period) as usize;
-                let slots: SmallVec<[_; 128]> = (0..macro_time / self.period)
-                    .map(|i| i * self.period + start)
-                    .map(|start| (start, start + tdelay))
-                    .collect();
+        match possible_starts.iter().find(|&start| {
+            let n = (max_time / self.period) as usize;
+            let slots: SmallVec<[_; 128]> = (0..macro_time / self.period)
+                .map(|i| i * self.period + start)
+                .map(|start| (start, start + tdelay))
+                .collect();
 
-                let ok = !conflict_with(&slots[..n], &occupied);
-                // 将找到的最小可行解归并到已占用时间槽列表中
-                if ok {
-                    link.merge_slots(&slots, sequence);
+            let ok = !conflict_with(&slots[..n], &occupied);
+            // 将找到的最小可行解归并到已占用时间槽列表中
+            if ok {
+                link.merge_slots(&slots, sequence, min_gap as u64);
+            }
+            ok
+        }) {
+            Some(&found) => {
+                // 更新调度状态
+                let link_offsets = self.link_offsets();
+                link_offsets.insert(link.id, found);
+                if link_offsets.len() == self.links.len() {
+                    self.schedule_done.set(true);
                 }
-                ok
-            })
-            .expect(&format!("No feasible schedule found for flow {}", self.id));
 
-        // 更新调度状态
-        let link_offsets = self.link_offsets();
-        link_offsets.insert(link.id, found);
-        if link_offsets.len() == self.links.len() {
-            self.schedule_done.set(true);
+                // 返回时间槽结束offset
+                Some(found + tdelay + self.ldelay(link))
+            }
+            None => {
+                self.schedule_fail.set(true);
+                None
+            }
         }
-
-        // 返回时间槽结束offset
-        found + tdelay + self.ldelay(link)
     }
 
     fn accdelay(&self, link: &Link) -> u64 {
@@ -367,64 +376,55 @@ impl<'a> Flow<'a> {
     }
 
     pub fn generate_remain_min_delay(mut self, links: &FxHashMap<LinkID, Link>) -> Self {
-        // 预构建入边映射和出度映射
-        let graph = self.links.values().map(|l| l.id).collect::<Vec<_>>();
-        let mut in_edges: UstrMap<Vec<LinkID>> = new!();
-        let mut out_degree: UstrMap<usize> = new!();
+        // 1. 利用所有链路（links.keys()）计算终端设备集合
+        let end_nodes_set = end_nodes(self.links.keys());
 
-        // 构建入边映射和出度映射
-        for &edge @ (from, to) in &graph {
-            in_edges.entry(to).or_default().push(edge);
-            out_degree.entry(to).or_default();
-            *out_degree.entry(from).or_default() += 1;
+        // 2. 统计每个 pred 链路的后继数量
+        let mut remaining_successors: FxHashMap<LinkID, u32> = new!();
+        for &(pred, _succ) in &self.routes {
+            *remaining_successors.entry(pred).or_insert(0) += 1;
         }
 
-        // 初始化结果映射和待处理边集
-        let mut result: FxHashMap<LinkID, u64> = new!();
-        let mut remaining_edges: FxHashSet<LinkID> = graph.iter().cloned().collect();
+        // 3. 初始化结果映射：对于那些在 route_links 中，其目标设备 (to) 在 end_nodes_set 中的链路，
+        //    直接计算 remain_min_delay = pdelay + tdelay + ldelay
+        let mut result = FxHashMap::default();
+        let mut queue = VecDeque::new();
 
-        // 找出出度为0的节点队列
-        let mut zero_out_nodes = end_nodes(&graph);
+        for id @ (_, to) in self.links.keys() {
+            if end_nodes_set.contains(to) {
+                let link = &links[id];
+                let delay = self.pdelay(link) + self.tdelay(link) + self.ldelay(link);
+                result.insert(*id, delay);
+                queue.push_back(*id);
+            }
+        }
 
-        while !zero_out_nodes.is_empty() {
-            let current_zero_out_nodes = zero_out_nodes;
-            zero_out_nodes = Vec::new();
-
-            for node in current_zero_out_nodes {
-                // 处理指向该节点的入边
-                if let Some(edges_to_node) = in_edges.get(&node) {
-                    for edge in edges_to_node {
-                        let link = &links[edge];
-                        // 计算并存储边的值
-                        let prev = result
-                            .iter()
-                            .filter(|(link, _)| link.0 == edge.1)
-                            .map(|(_, prev)| *prev)
-                            .max()
-                            .unwrap_or(0);
-                        result.insert(
-                            *edge,
-                            prev + self.pdelay(&link) + self.tdelay(&link) + self.ldelay(&link),
-                        );
-
-                        // 移除该边
-                        remaining_edges.remove(edge);
-
-                        // 减少起始节点的出度
-                        if let Some(degree) = out_degree.get_mut(&edge.0) {
-                            *degree -= 1;
-
-                            // 如果起始节点出度变为0，加入下一轮处理
-                            if *degree == 0 {
-                                zero_out_nodes.push(edge.0);
+        // 4. 反向传播：当队列非空时，依次处理每个链路，更新其所有前驱的 remain_min_delay
+        while let Some(curr) = queue.pop_front() {
+            if let Some(preds) = self.predecessors.get(&curr) {
+                for &pred in preds {
+                    // 对 pred 的计数做递减
+                    let count = remaining_successors.get_mut(&pred).unwrap();
+                    *count -= 1;
+                    // 计算当前候选值
+                    let pred_link = &links[&pred];
+                    let candidate = self.pdelay(pred_link)
+                        + self.tdelay(pred_link)
+                        + self.ldelay(pred_link)
+                        + result[&curr];
+                    result
+                        .entry(pred)
+                        .and_modify(|v| {
+                            if candidate > *v {
+                                *v = candidate;
                             }
-                        }
+                        })
+                        .or_insert(candidate);
+                    // 当 pred 的所有后继均处理完毕，加入队列
+                    if *count == 0 {
+                        queue.push_back(pred);
                     }
                 }
-            }
-
-            if zero_out_nodes.is_empty() && !remaining_edges.is_empty() {
-                zero_out_nodes = remaining_edges.iter().map(|edge| edge.0).collect();
             }
         }
 
@@ -456,7 +456,7 @@ impl<'a> Flow<'a> {
     }
 }
 
-fn end_nodes(links: &[LinkID]) -> Vec<Ustr> {
+fn end_nodes<'a>(links: impl Iterator<Item = &'a LinkID>) -> UstrSet {
     let mut neighbors: UstrMap<UstrSet> = new!();
     let mut indegree: UstrMap<u32> = new!();
 
@@ -498,7 +498,10 @@ impl<'a> PreGraph<'a> {
 
         // 移除流的所有路由边
         for route in flow.routes.iter() {
-            self.graph.remove_edge(route_id[&(flow.id, *route)]);
+            // self.graph.remove_edge(route_id[&(flow.id, *route)]);
+            if let Some(edge) = route_id.get(&(flow.id, *route)) {
+                self.graph.remove_edge(*edge);
+            }
         }
 
         // 移除孤立的节点
@@ -514,44 +517,6 @@ impl<'a> PreGraph<'a> {
         });
     }
 }
-
-// 二分查找，时间复杂度为O(n log m)
-// n = slots.len(), m = occupied.len()
-// fn _conflict_with_1(slots: &[(u64, u64)], occupied: &[(u64, u64)]) -> bool {
-//     if occupied.is_empty() {
-//         return false;
-//     }
-
-//     slots.into_iter().any(|&(start, end)| {
-//         occupied
-//             .binary_search_by(|&(occupied_start, occupied_end)| match true {
-//                 _ if occupied_end <= start => std::cmp::Ordering::Less,
-//                 _ if occupied_start >= end => std::cmp::Ordering::Greater,
-//                 _ => std::cmp::Ordering::Equal,
-//             })
-//             .is_ok()
-//     })
-// }
-
-// 双指针法，时间复杂度为O(n + m)
-// fn _conflict_with_2(slots: &[(u64, u64)], occupied: &[(u64, u64)]) -> bool {
-//     let mut i = 0;
-//     let mut j = 0;
-
-//     while i < slots.len() && j < occupied.len() {
-//         let (s1, e1) = unsafe { *slots.get_unchecked(i) };
-//         let (s2, e2) = unsafe { *occupied.get_unchecked(j) };
-
-//         if e1 <= s2 {
-//             i += 1;
-//         } else if e2 <= s1 {
-//             j += 1;
-//         } else {
-//             return true;
-//         }
-//     }
-//     false
-// }
 
 // 结合双指针和二分查找，时间复杂度为O(n * log m)
 fn conflict_with(slots: &[(u64, u64)], occupied: &[(u64, u64)]) -> bool {
@@ -631,36 +596,6 @@ pub fn sort_hops(hops: &FxHashSet<LinkID>) -> (Vec<LinkID>, FxHashMap<LinkID, Ve
 
     (sorted_hops, predecessors)
 }
-
-// pub fn merge_slots(slots_data: &mut [(u64, u64)]) -> usize {
-//     if slots_data.len() <= 1 {
-//         return slots_data.len();
-//     }
-
-//     // 使用基数排序并将key压缩为u32以加速排序，绝大多数情况下u32不会溢出
-//     radsort::sort_by_key(slots_data, |&(start, _)| start as u32);
-
-//     let mut w = 0;
-
-//     for r in 1..slots_data.len() {
-//         unsafe {
-//             let curr = slots_data.get_unchecked(w);
-//             let next = slots_data.get_unchecked(r);
-
-//             if curr.1 == next.0 {
-//                 slots_data.get_unchecked_mut(w).1 = next.1;
-//             } else {
-//                 w += 1;
-//                 if w != r {
-//                     *slots_data.get_unchecked_mut(w) = *next;
-//                 }
-//             }
-//         }
-//     }
-
-//     // 返回合并后的数组长度
-//     w + 1
-// }
 
 fn gcd(mut a: u64, mut b: u64) -> u64 {
     while b != 0 {

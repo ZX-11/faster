@@ -235,8 +235,8 @@ pub fn process((filename, sequence): (&str, &str)) -> &'static ProcessedInput {
                         predecessors,
                         ..Default::default()
                     }
-                    .generate_remain_min_delay(&p.links)
-                    .generate_routes(),
+                    .generate_routes()
+                    .generate_remain_min_delay(&p.links),
                 )
             }
             Hops::MultiLevel(hops) => (

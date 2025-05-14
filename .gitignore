@@ -6,3 +6,4 @@ perf.*
 result*
 seq*
 *.py
+*.csv

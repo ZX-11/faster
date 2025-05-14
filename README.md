@@ -43,6 +43,8 @@ cargo build --release
 ./faster --input-inet <input-file> <sequence-file> --output-inet <output-file>
 ```
 
+<sequence-file> 是可选的，用于指定业务流时序。如果不提供，此项应输入'-'
+
 ### FAST 输入模式
 
 ```bash

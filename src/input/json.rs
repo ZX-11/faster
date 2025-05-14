@@ -134,8 +134,8 @@ pub fn process(filename: &str) -> &'static ProcessedInput {
                     predecessors,
                     ..Default::default()
                 }
+                .generate_routes()
                 .generate_remain_min_delay(&p.links)
-                .generate_routes(),
             )
         })
         .collect();

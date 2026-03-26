@@ -110,6 +110,7 @@ dependencies = [
  "fxhash",
  "indexmap",
  "json5",
+ "lazy_static",
  "petgraph",
  "radsort",
  "regex",

@@ -36,11 +36,44 @@ fn main() {
         });
 
     let ProcessedInput {
+        devices: _,
+        links: _,
+        flows,
+        ..
+    } = process_input!(input_type => { inet, json, fast });
+
+    schedule(false);
+
+    match output_type {
+        OutputType::Inet(filename) => output_inet::output(filename),
+        OutputType::Console => {
+            for (name, flow) in flows {
+                println!("Flow {}", name);
+                for ((from, to), offset) in flow.link_offsets().iter() {
+                    println!("\t{} -> {}: {}", from, to, offset);
+                }
+            }
+        }
+    }
+
+    let failed_count = flows.values().filter(|f| f.schedule_fail.get()).count();
+
+    if failed_count != 0 {
+        exit(1);
+    }
+}
+
+fn schedule(fifo: bool) {
+    let ProcessedInput {
         devices,
         links,
         flows,
         ..
-    } = process_input!(input_type => { inet, json, fast });
+    } = processed_input();
+
+    for (_, flow) in flows.iter() {
+        flow.pcp.set(7);
+    }
 
     let mut flow_sequence: BTreeMap<u32, UstrMap<_>> = BTreeMap::new();
 
@@ -51,7 +84,6 @@ fn main() {
             .insert(*id, flow);
     }
 
-    // 构建拓扑
     let mut network = Network::default();
 
     let device_id = devices
@@ -72,7 +104,6 @@ fn main() {
     let mut start_offset = 0;
 
     for (sequence, seq_flows) in flow_sequence {
-        // 构建先序关系图
         let mut pre_graph = PreGraph::default();
 
         let link_id = links
@@ -84,7 +115,6 @@ fn main() {
         let mut route_flows = FxHashMap::default();
 
         for flow in seq_flows.values() {
-            // 为流设置最早起始时间
             flow.start_offset
                 .set(if no_seq(sequence) { 0 } else { start_offset });
 
@@ -94,7 +124,6 @@ fn main() {
                     pre_graph.add_edge(link_id[hop], link_id[next_hop], Route { id: *route }),
                 );
 
-                // 映射路由到网络流量序列
                 route_flows
                     .entry(*route)
                     .or_insert_with(Vec::new)
@@ -102,7 +131,6 @@ fn main() {
             }
         }
 
-        // let mut breakloop = Vec::new();
         let mut breakloop_flows = UstrSet::default();
 
         schedule_pre_graph(
@@ -116,50 +144,33 @@ fn main() {
             &mut start_offset,
             pre_graph,
             &mut breakloop_flows,
+            fifo
         );
 
         let mut breakloop: Vec<_> = breakloop_flows
             .into_iter()
             .filter_map(|id| {
                 let flow = &flows[&id];
-                flow.calculate_urgency(flow.first_unscheduled_link()).map(|urgency| (flow, urgency))
+                flow.calculate_urgency(flow.first_unscheduled_link())
+                    .map(|urgency| (flow, urgency))
             })
             .collect();
 
         breakloop.sort_by_key(|(_, u)| *u);
 
         if END_BREAKLOOP {
-            // 按照紧急程度调度
             for (f, _) in breakloop.iter() {
                 for link in f.links.values().filter(|l| !f.scheduled_link(l)) {
                     match match no_seq(sequence) {
-                        true => f.schedule_link(flows.values(), link, sequence),
-                        false => f.schedule_link(seq_flows.values(), link, sequence),
+                        true => f.schedule_link(flows.values(), link, sequence, fifo),
+                        false => f.schedule_link(seq_flows.values(), link, sequence, fifo),
                     } {
                         Some(result) => start_offset = start_offset.max(result),
-                        None => break,
+                        _ => break,
                     }
                 }
             }
         }
-    }
-
-    match output_type {
-        OutputType::Inet(filename) => output_inet::output(filename),
-        OutputType::Console => {
-            for (name, flow) in flows {
-                println!("Flow {}", name);
-                for ((from, to), offset) in flow.link_offsets().iter() {
-                    println!("\t{} -> {}: {}", from, to, offset);
-                }
-            }
-        }
-    }
-
-    let failed_count = flows.values().filter(|f| f.schedule_fail.get()).count();
-    if failed_count != 0 {
-        eprintln!("{}", failed_count);
-        exit(failed_count as i32);
     }
 }
 
@@ -176,16 +187,15 @@ fn schedule_pre_graph(
     start_offset: &mut u64,
     mut pre_graph: PreGraph<'_>,
     breakloop_flows: &mut UstrSet,
+    fifo: bool,
 ) {
     let ProcessedInput {
-        // devices,
         links,
         flows,
         ..
     } = processed_input();
 
     while pre_graph.node_count() != 0 {
-        // 找到所有入度为0的节点
         let queue: SmallVec<[_; 64]> = pre_graph
             .node_indices()
             .filter(|node| {
@@ -263,6 +273,7 @@ fn schedule_pre_graph(
                         start_offset,
                         pre_graph_inner,
                         &mut breakloop_flows_inner,
+                        fifo
                     );
 
                     for flow in &breakloop {
@@ -272,14 +283,15 @@ fn schedule_pre_graph(
             }
         } else {
             let schedule_link = |link: &&model::Link| {
-                // 获取当前链路待调度的流
                 let mut flows_to_sched: SmallVec<[_; 64]> = link
                     .flows
                     .iter()
                     .map(|f| &flows[f])
                     .filter(|f| match (breakloop_flows.is_empty(), END_BREAKLOOP) {
                         (false, false) => {
-                            ctx.seq_flows.contains_key(&f.id) && !f.schedule_done.get() && !f.schedule_fail.get()
+                            ctx.seq_flows.contains_key(&f.id)
+                                && !f.schedule_done.get()
+                                && !f.schedule_fail.get()
                         }
                         _ => {
                             ctx.seq_flows.contains_key(&f.id)
@@ -288,23 +300,19 @@ fn schedule_pre_graph(
                                 && !f.schedule_fail.get()
                         }
                     })
-                    .filter_map(|f|
-                        f.calculate_urgency(link).map(|urgency| (f, urgency))
-                    )
+                    .filter_map(|f| f.calculate_urgency(link).map(|urgency| (f, urgency)))
                     .collect();
 
-                // 按紧急程度排序
                 radsort::sort_by_key(&mut flows_to_sched, |(_, urgency)| *urgency);
 
-                // 依次调度，返回调度后的最大offset
                 flows_to_sched
                     .iter()
                     .map(|(flow, _)| *flow)
                     .filter_map(|f| {
                         if no_seq(ctx.sequence) {
-                            f.schedule_link(flows.values(), link, ctx.sequence)
+                            f.schedule_link(flows.values(), link, ctx.sequence, fifo)
                         } else {
-                            f.schedule_link(ctx.seq_flows.values(), link, ctx.sequence)
+                            f.schedule_link(ctx.seq_flows.values(), link, ctx.sequence, fifo)
                         }
                     })
                     .max()
@@ -314,7 +322,6 @@ fn schedule_pre_graph(
             *start_offset =
                 *start_offset.max(&mut queue.iter().map(schedule_link).max().unwrap_or(0));
 
-            // 移除已处理的节点
             for link in &queue {
                 pre_graph.remove_node(ctx.link_id[&link.id]);
             }
@@ -323,13 +330,12 @@ fn schedule_pre_graph(
 }
 
 fn breakloop_points(graph: &StableGraph<&model::Link, Route>) -> Vec<RouteID> {
-    let sccs = tarjan_scc(graph); // 使用 Tarjan 算法找到所有强连通分量
+    let sccs = tarjan_scc(graph);
 
     let mut results = Vec::new();
 
     for scc in sccs.into_iter().filter(|scc| scc.len() > 1) {
         let scc = FxHashSet::from_iter(scc);
-        // 收集所有边及其权重（平行边数量）
         let mut edges = FxHashMap::default();
         for &node_i in &scc {
             for node_j in graph.neighbors_directed(node_i, Outgoing) {
@@ -346,10 +352,8 @@ fn breakloop_points(graph: &StableGraph<&model::Link, Route>) -> Vec<RouteID> {
 
         let mut edges: Vec<_> = edges.into_iter().collect();
 
-        // 按权重排序
         radsort::sort_by_key(&mut edges, |(_, w)| -w);
 
-        // Kruskal计算最大生成树
         let mut uf = petgraph::unionfind::UnionFind::new(graph.capacity().0);
         let mut mst_edges = FxHashSet::default();
 
@@ -359,7 +363,6 @@ fn breakloop_points(graph: &StableGraph<&model::Link, Route>) -> Vec<RouteID> {
             }
         }
 
-        // 将非最大生成树边加入结果
         for ((u, v), _) in &edges {
             if !mst_edges.contains(&(u, v)) && !mst_edges.contains(&(v, u)) {
                 if graph[*u].id.1 == graph[*v].id.0 {

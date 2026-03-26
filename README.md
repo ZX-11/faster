@@ -1,6 +1,6 @@
 # FASTER
 
-FASTER 是一个用 Rust 实现的高性能 TSN 时间触发业务流快速调度工具
+FASTER 是一个用 Rust 实现的高性能 TSN 时间触发业务流快速调度工具，一个COS的参考实现
 
 ## 安装
 

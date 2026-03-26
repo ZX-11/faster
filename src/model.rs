@@ -3,14 +3,13 @@ use petgraph::{
     prelude::{EdgeIndex, StableGraph},
     Graph,
 };
-use smallvec::SmallVec;
 use std::{
     any::Any,
-    cell::{Cell, RefCell, UnsafeCell},
+    cell::{Cell, UnsafeCell},
     collections::VecDeque,
     u32,
 };
-use ustr::{Ustr, UstrMap, UstrSet};
+use ustr::{Ustr, UstrMap};
 
 pub type FxIndexMap<K, V> = indexmap::IndexMap<K, V, FxBuildHasher>;
 
@@ -28,17 +27,15 @@ pub struct ProcessedInput {
 
 static mut PROCESSED_INPUT: Option<ProcessedInput> = None;
 
-// 这个函数只能被调用一次，用于读取输入，示例用法见input_json.rs
 pub fn init_processed_input() -> &'static mut ProcessedInput {
     unsafe {
         let p = &mut *std::ptr::addr_of_mut!(PROCESSED_INPUT);
-        assert!(p.is_none());
         *p = Some(ProcessedInput::default());
         p.as_mut().unwrap_unchecked()
     }
 }
 
-// 调用前必须已经调用init_processed_input()
+#[inline]
 pub fn processed_input() -> &'static ProcessedInput {
     unsafe { (&*std::ptr::addr_of!(PROCESSED_INPUT)).as_ref().unwrap() }
 }
@@ -51,7 +48,6 @@ macro_rules! new {
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Device {
-    // pub id: Ustr,
     pub pdelay: u32,
     pub end_device: bool,
 }
@@ -63,21 +59,46 @@ pub struct Link {
     pub _to: Device,
     pub delay: u32,
     pub speed: u32,
+    pub min_gap: Cell<u32>,
     pub flows: Vec<FlowID>,
 
-    pub occupied: UnsafeCell<FxIndexMap<u32, Vec<(u64, u64)>>>,
-    pub macro_time: RefCell<FxHashMap<u32, u64>>,
-    pub max_time: RefCell<FxHashMap<u32, u64>>,
+    pub occupied: UnsafeCell<Vec<(u64, u64)>>,
+    pub hyper_period: Cell<u64>,
+    pub max_time: Cell<u64>,
 }
 
 impl Link {
     #[inline]
-    fn occupied(&self) -> &mut FxIndexMap<u32, Vec<(u64, u64)>> {
+    fn occupied(&self) -> &mut Vec<(u64, u64)> {
         unsafe { self.occupied.get().as_mut().unwrap_unchecked() }
     }
 
-    fn merge_slots(&self, slots: &[(u64, u64)], sequence: u32, min_gap: u64) {
-        let occupied = self.occupied().entry(sequence).or_default();
+    #[inline]
+    fn min_gap(&self) -> u64 {
+        match self.min_gap.get() {
+            0 => {
+                let gap = 512000 / self.speed;
+                self.min_gap.set(gap);
+                gap as u64
+            }
+            x => x as u64,
+        }
+    }
+
+    pub fn hyper_period(&self) -> u64 {
+        let ref flows = processed_input().flows;
+        match self.hyper_period.get() {
+            0 => {
+                let hyper_period = lcm_all(self.flows.iter().map(|f| flows[f].period));
+                self.hyper_period.set(hyper_period);
+                hyper_period
+            }
+            x => x,
+        }
+    }
+
+    fn merge_slots(&self, slots: &[(u64, u64)]) {
+        let occupied = self.occupied();
 
         if occupied.is_empty() {
             *occupied = slots.to_vec();
@@ -95,36 +116,55 @@ impl Link {
                     slots.get_unchecked(j),
                     new.last_mut(),
                 ) {
-                    (x, _, Some(last)) if last.1 + min_gap >= x.0 => {
-                        last.1 = x.1;
+                    (x, _, Some(last)) if last.1 + self.min_gap() >= x.0 => {
+                        last.1 = last.1.max(x.1);
                         i += 1;
                     }
-                    (_, y, Some(last)) if last.1 + min_gap >= y.0 => {
-                        last.1 = y.1;
+                    (_, y, Some(last)) if last.1 + self.min_gap() >= y.0 => {
+                        last.1 = last.1.max(y.1);
                         j += 1;
                     }
-                    (x, y, _) if x.0 < y.0 => {
-                        new.push(*x);
-                        i += 1;
-                    }
-                    (_, y, _) => {
-                        new.push(*y);
-                        j += 1;
+                    (x, y, _) => {
+                        if x.0 <= y.1 + self.min_gap() && y.0 <= x.1 + self.min_gap() {
+                            let start = x.0.min(y.0);
+                            let end = x.1.max(y.1);
+
+                            if let Some(last) = new.last_mut() {
+                                if last.1 + self.min_gap() >= start {
+                                    last.1 = last.1.max(end);
+                                } else {
+                                    new.push((start, end));
+                                }
+                            } else {
+                                new.push((start, end));
+                            }
+                            i += 1;
+                            j += 1;
+                        } else if x.0 < y.0 {
+                            new.push(*x);
+                            i += 1;
+                        } else {
+                            new.push(*y);
+                            j += 1;
+                        }
                     }
                 }
             }
         }
 
         let mut remaining = |idx: usize, list: &[(u64, u64)]| {
-            if idx < list.len() {
-                let last = new.last_mut().unwrap();
-
-                if list[idx].0 == last.1 {
-                    last.1 = list[idx].1;
-                    new.extend_from_slice(&list[idx + 1..]);
+            let mut current_idx = idx;
+            while current_idx < list.len() {
+                if let Some(last) = new.last_mut() {
+                    if list[current_idx].0 <= last.1 + self.min_gap() {
+                        last.1 = last.1.max(list[current_idx].1);
+                    } else {
+                        new.push(list[current_idx]);
+                    }
                 } else {
-                    new.extend_from_slice(&list[idx..]);
+                    new.push(list[current_idx]);
                 }
+                current_idx += 1;
             }
         };
 
@@ -148,14 +188,16 @@ pub struct Flow<'a> {
     pub max_latency: u64,
     pub sequence: u32,
 
-    // 拓扑相关
-    pub links: FxIndexMap<LinkID, &'a Link>, // 保持插入顺序的哈希表
+    pub links: FxIndexMap<LinkID, &'a Link>,
     pub predecessors: FxHashMap<LinkID, Vec<LinkID>>,
     pub remain_min_delay: FxHashMap<LinkID, u64>,
     pub routes: Vec<RouteID>,
 
-    // 调度状态
     pub link_offsets: UnsafeCell<FxHashMap<LinkID, u64>>,
+    pub link_accdelays: UnsafeCell<FxHashMap<LinkID, u64>>,
+    pub arrival: UnsafeCell<UstrMap<u64>>,
+
+    pub pcp: Cell<i8>,
     pub start_offset: Cell<u64>,
     pub schedule_done: Cell<bool>,
     pub schedule_fail: Cell<bool>,
@@ -171,7 +213,14 @@ impl<'a> AsRef<Flow<'a>> for Flow<'a> {
 impl<'a> Flow<'a> {
     #[inline]
     pub fn offset_of(&self, link_id: &LinkID) -> u64 {
-        self.link_offsets()[link_id]
+        if let Some(v) = self.link_offsets().get(link_id) {
+            *v
+        } else {
+            panic!(
+                "offset not found for flow {} on ({}->{})",
+                self.id, link_id.0, link_id.1
+            );
+        }
     }
 
     #[inline]
@@ -179,10 +228,31 @@ impl<'a> Flow<'a> {
         unsafe { self.link_offsets.get().as_mut().unwrap_unchecked() }
     }
 
+    #[inline]
+    pub fn arrival(&self) -> &mut UstrMap<u64> {
+        unsafe { self.arrival.get().as_mut().unwrap_unchecked() }
+    }
+
+    #[inline]
+    pub fn accdelay_of(&self, link_id: &LinkID) -> u64 {
+        if let Some(v) = self.link_accdelays().get(link_id) {
+            *v
+        } else {
+            panic!(
+                "accdelay not found for flow {} on ({}->{})",
+                self.id, link_id.0, link_id.1
+            )
+        }
+    }
+
+    #[inline]
+    pub fn link_accdelays(&self) -> &mut FxHashMap<LinkID, u64> {
+        unsafe { self.link_accdelays.get().as_mut().unwrap_unchecked() }
+    }
+
     pub fn calculate_urgency(&self, link: &'a Link) -> Option<u64> {
         let total_delay =
-            self.sfdelay(link) + self.accdelay(link) + self.remain_min_delay[&link.id]
-                - self.start_offset.get();
+            self.sfdelay(link) + self.accdelay(link) + self.remain_min_delay[&link.id];
 
         match self.max_latency as i64 - total_delay as i64 {
             x if x < 0 => {
@@ -215,7 +285,7 @@ impl<'a> Flow<'a> {
 
     #[inline]
     pub fn sfdelay(&self, link: &'a Link) -> u64 {
-        self.pdelay(link) // 目前未考虑接收存储转发所需时间
+        self.pdelay(link)
     }
 
     #[inline]
@@ -238,115 +308,123 @@ impl<'a> Flow<'a> {
 
     pub fn schedule_link(
         &self,
-        flows: impl Iterator<Item = impl AsRef<Flow<'a>>>,
+        _flows: impl Iterator<Item = impl AsRef<Flow<'a>>>,
         link: &'a Link,
-        sequence: u32,
+        _sequence: u32,
+        fifo: bool
     ) -> Option<u64> {
-        let earliest = self.accdelay(link) + self.pdelay(link);
+        let accdelay = self.accdelay(link);
+        let earliest = self.start_offset.get() + accdelay + self.pdelay(link);
+        
+        let earliest_offset = earliest % self.period;
 
-        // 计算已调度最大周期
-        let max_time = {
-            let mut m = link.max_time.borrow_mut();
-            let max_time = *m
-                .entry(sequence)
-                .and_modify(|v| *v = lcm(self.period, *v))
-                .or_insert(self.period);
-            if sequence != u32::MAX {
-                m.entry(u32::MAX)
-                    .and_modify(|v| *v = lcm(*v, max_time))
-                    .or_insert(max_time);
-            }
-            max_time
+        let max_time = if link.max_time.get() != link.hyper_period() {
+            link.max_time.update(|v| match v {
+                0 => self.period,
+                v => lcm(v, self.period),
+            });
+            link.max_time.get()
+        } else {
+            link.hyper_period()
         };
 
-        // 计算宏周期
-        let macro_time = link
-            .macro_time
-            .borrow_mut()
-            .entry(sequence)
-            .or_insert(lcm_all(flows.map(|f| f.as_ref().period)))
-            .clone();
+        let hyper_period = link.hyper_period();
 
-        // 初始化无时序已分配时间槽
-        if sequence == u32::MAX && !link.occupied().contains_key(&u32::MAX) {
-            link.occupied().insert(
-                u32::MAX,
-                link.occupied()
-                    .values()
-                    .flat_map(|i| i.iter())
-                    .cloned()
-                    .collect(),
-            );
-        }
+        let occupied = link.occupied().as_slice(); //.entry(sequence).or_default();
 
-        // 取出与本次调度相关的时间槽
-        let occupied = link.occupied().entry(sequence).or_default();
+        let end = match occupied.binary_search_by_key(&max_time, |slot| slot.1) {
+            Ok(x) => x + 1,
+            Err(x) => x,
+        };
 
-        let start = occupied
-            .binary_search_by_key(&earliest, |slot| slot.1)
-            .unwrap_or_else(|i| i);
-        let end = occupied[start..]
-            .binary_search_by_key(&max_time, |slot| slot.0)
-            .unwrap_or_else(|i| i);
-
-        let occupied = &occupied[start..start + end];
+        let occupied = &occupied[..end];
 
         let tdelay = self.tdelay(link);
 
-        let min_gap = 512000 / link.speed;
+        let mut offset = earliest_offset;
+        let mut wait_time = 0;
+        let mut accdelay_curr = accdelay + self.pdelay(link) + self.ldelay(link) + tdelay;
 
-        // 找到所有待检测解并排序去重
-        let mut possible_starts: SmallVec<[_; 512]> = occupied
-            .iter()
-            .zip(occupied.iter().skip(1))
-            .filter_map(|(&(_, prev_end), &(next_start, _))| {
-                let start = _mod(prev_end, self.period);
-                match start >= earliest && next_start >= prev_end + tdelay {
-                    true => Some(start),
-                    false => None,
+        let n = (max_time / self.period) as usize;
+
+        let mut buf = Vec::new();
+
+        let slots = loop {
+            buf.clear();
+            buf.push((0, 0));
+            buf.extend(
+                (0..hyper_period / self.period)
+                    .map(|i| i * self.period + offset)
+                    .map(|start| (start, start + tdelay)),
+            );
+
+            let mut exceed = false;
+
+            if let Some(last) = buf.last().cloned() {
+                if last.1 > hyper_period {
+                    exceed = true;
+                    buf[0] = (0, last.1 - hyper_period);
+                    *buf.last_mut().unwrap() = (last.0, hyper_period);
                 }
-            })
-            .collect();
-
-        possible_starts.push(earliest);
-
-        if let Some(last) = occupied.last() {
-            if _mod(last.1, self.period) + tdelay <= self.period {
-                possible_starts.push(last.1);
             }
-        }
 
-        // 此处使用基数排序，时间复杂度为O(n)
-        radsort::sort(&mut possible_starts);
-        possible_starts.dedup();
+            let slots = match exceed {
+                true =>  &buf[..n + 1],
+                false => &buf[1..n + 1],
+            };
 
-        // 找到最小可行解
-        match possible_starts.iter().find(|&start| {
-            let n = (max_time / self.period) as usize;
-            let slots: SmallVec<[_; 128]> = (0..macro_time / self.period)
-                .map(|i| i * self.period + start)
-                .map(|start| (start, start + tdelay))
-                .collect();
+            match required_increase(slots, occupied) {
+                0 => {
+                    break Some(match exceed {
+                        true =>  &buf[..],
+                        false => &buf[1..],
+                    });
+                }
+                inc => {
+                    wait_time += inc;
+                    offset += inc;
+                    accdelay_curr += inc;
 
-            let ok = !conflict_with(&slots[..n], &occupied);
-            // 将找到的最小可行解归并到已占用时间槽列表中
-            if ok {
-                link.merge_slots(&slots, sequence, min_gap as u64);
+                    if offset >= self.period {
+                        offset -= self.period;
+                    };
+
+                    if wait_time >= self.period {
+                        break None;
+                    }
+
+                    if accdelay_curr > self.max_latency {
+                        break None;
+                    }
+                }
             }
-            ok
-        }) {
-            Some(&found) => {
-                // 更新调度状态
+        };
+
+        match slots {
+            Some(slots) => {
+                self.link_accdelays().insert(link.id, accdelay_curr);
+
                 let link_offsets = self.link_offsets();
-                link_offsets.insert(link.id, found);
+                link_offsets.insert(link.id, offset);
+
                 if link_offsets.len() == self.links.len() {
                     self.schedule_done.set(true);
                 }
 
-                // 返回时间槽结束offset
-                Some(found + tdelay + self.ldelay(link))
+                let slot_end = earliest + wait_time + tdelay;
+
+                if fifo {
+                    self.arrival().insert(link.id.1, (slot_end + self.pdelay(link)) % self.period);
+                    if !ensure_fifo(self, link) {
+                        return None;
+                    }
+                }
+
+                link.merge_slots(slots);
+
+                Some(slot_end + self.ldelay(link))
             }
-            None => {
+            _ => {
                 self.schedule_fail.set(true);
                 None
             }
@@ -355,12 +433,8 @@ impl<'a> Flow<'a> {
 
     fn accdelay(&self, link: &Link) -> u64 {
         match self.predecessors.get(&link.id) {
-            Some(pred) => pred
-                .iter()
-                .map(|l| self.offset_of(l) + self.tdelay(self.links[l]))
-                .max()
-                .unwrap_or(self.start_offset.get()),
-            None => self.start_offset.get(),
+            Some(pred) => pred.iter().map(|l| self.accdelay_of(l)).max().unwrap_or(0),
+            _ => 0,
         }
     }
 
@@ -376,22 +450,16 @@ impl<'a> Flow<'a> {
     }
 
     pub fn generate_remain_min_delay(mut self, links: &FxHashMap<LinkID, Link>) -> Self {
-        // 1. 利用所有链路（links.keys()）计算终端设备集合
-        let end_nodes_set = end_nodes(self.links.keys());
-
-        // 2. 统计每个 pred 链路的后继数量
-        let mut remaining_successors: FxHashMap<LinkID, u32> = new!();
+        let mut outdegree: FxHashMap<LinkID, u32> = new!();
         for &(pred, _succ) in &self.routes {
-            *remaining_successors.entry(pred).or_insert(0) += 1;
+            *outdegree.entry(pred).or_insert(0) += 1;
         }
 
-        // 3. 初始化结果映射：对于那些在 route_links 中，其目标设备 (to) 在 end_nodes_set 中的链路，
-        //    直接计算 remain_min_delay = pdelay + tdelay + ldelay
         let mut result = FxHashMap::default();
         let mut queue = VecDeque::new();
 
-        for id @ (_, to) in self.links.keys() {
-            if end_nodes_set.contains(to) {
+        for id in self.links.keys() {
+            if !outdegree.contains_key(id) {
                 let link = &links[id];
                 let delay = self.pdelay(link) + self.tdelay(link) + self.ldelay(link);
                 result.insert(*id, delay);
@@ -399,19 +467,19 @@ impl<'a> Flow<'a> {
             }
         }
 
-        // 4. 反向传播：当队列非空时，依次处理每个链路，更新其所有前驱的 remain_min_delay
         while let Some(curr) = queue.pop_front() {
             if let Some(preds) = self.predecessors.get(&curr) {
                 for &pred in preds {
-                    // 对 pred 的计数做递减
-                    let count = remaining_successors.get_mut(&pred).unwrap();
-                    *count -= 1;
-                    // 计算当前候选值
+                    if let Some(count) = outdegree.get_mut(&pred) {
+                        *count -= 1;
+                    }
+
                     let pred_link = &links[&pred];
                     let candidate = self.pdelay(pred_link)
                         + self.tdelay(pred_link)
                         + self.ldelay(pred_link)
                         + result[&curr];
+
                     result
                         .entry(pred)
                         .and_modify(|v| {
@@ -420,8 +488,8 @@ impl<'a> Flow<'a> {
                             }
                         })
                         .or_insert(candidate);
-                    // 当 pred 的所有后继均处理完毕，加入队列
-                    if *count == 0 {
+                    
+                    if outdegree.get(&pred).map_or(true, |&count| count == 0) {
                         queue.push_back(pred);
                     }
                 }
@@ -456,22 +524,123 @@ impl<'a> Flow<'a> {
     }
 }
 
-fn end_nodes<'a>(links: impl Iterator<Item = &'a LinkID>) -> UstrSet {
-    let mut neighbors: UstrMap<UstrSet> = new!();
-    let mut indegree: UstrMap<u32> = new!();
+fn check_fifo(a: & Flow, b: & Flow, link: &Link) -> bool {
+    match (a.arrival().get(&link.id.0), b.arrival().get(&link.id.0)) {
+        (Some(&a_arrival_offset), Some(&b_arrival_offset)) => {
+            let a_departure_offset = a.offset_of(&link.id);
+            let b_departure_offset = b.offset_of(&link.id);
 
-    for &(from, to) in links {
-        neighbors.entry(from).or_default().insert(to);
-        neighbors.entry(to).or_default().insert(from);
-        *indegree.entry(to).or_default() += 1;
+            let hyper_period = lcm(a.period, b.period);
+
+            let generate_instances = |period: u64, arr_offset: u64, dep_offset: u64| -> Vec<(u64, u64)> {
+                let rel_dep = if dep_offset < arr_offset {
+                    dep_offset + period
+                } else {
+                    dep_offset
+                };
+
+                let count = hyper_period / period; 
+
+                let mut instances = Vec::with_capacity(count as usize + 1);
+
+                for i in 0..=count {
+                    let base_time = i * period;
+                    instances.push((base_time + arr_offset, base_time + rel_dep));
+                }
+                instances
+            };
+
+            let a_instances = generate_instances(a.period, a_arrival_offset, a_departure_offset);
+            let b_instances = generate_instances(b.period, b_arrival_offset, b_departure_offset);
+
+            let mut i = 0;
+            let mut j = 0;
+            let mut max_departure = 0;
+
+            while i < a_instances.len() || j < b_instances.len() {
+                let use_a = if i < a_instances.len() && j < b_instances.len() {
+                    let (arr_a, dep_a) = a_instances[i];
+                    let (arr_b, dep_b) = b_instances[j];
+                    if arr_a < arr_b {
+                        true
+                    } else if arr_a > arr_b {
+                        false
+                    } else {
+                        dep_a <= dep_b
+                    }
+                } else if i < a_instances.len() {
+                    true
+                } else {
+                    false
+                };
+
+                let current_departure;
+                
+                if use_a {
+                    current_departure = a_instances[i].1;
+                    i += 1;
+                } else {
+                    current_departure = b_instances[j].1;
+                    j += 1;
+                }
+
+                if current_departure < max_departure {
+                    return false;
+                }
+
+                max_departure = current_departure;
+            }
+
+            true
+        }
+        _ => true,
+    }
+}
+
+fn check_link_pcp(f: &Flow, link: &Link, pcp: i8) -> bool {
+    let ref flows = processed_input().flows;
+    for scheduled in link
+        .flows
+        .iter()
+        .map(|f| &flows[f])
+        .filter(|f| f.scheduled_link(link))
+        .filter(|f | f.pcp.get() == pcp) {
+
+        if std::ptr::eq(f, scheduled) {
+            continue;
+        }
+        
+        if !check_fifo(f, scheduled, link) {
+            return false;
+        }
+    }
+    true
+}
+
+fn check_flow_pcp(f: &Flow, pcp: i8) -> bool {
+    let ref links = processed_input().links;
+    for link in f.link_offsets().keys().map(|l| &links[l]) {
+        if !check_link_pcp(f, link, pcp) {
+            return false;
+        }
+    }
+    true
+}
+
+fn ensure_fifo(f: &Flow, link: &Link) -> bool {
+    if !check_link_pcp(f, link, f.pcp.get()) {
+        for pcp in (0..8).rev() {
+            if pcp != f.pcp.get() && check_flow_pcp(f, pcp) {
+                f.pcp.set(pcp);
+                return true;
+            }
+        }
+        f.schedule_fail.set(true);
+        f.pcp.set(-1);
+        return false;
     }
 
-    neighbors
-        .into_iter()
-        .filter(|(_, v)| v.len() == 1)
-        .map(|(k, _)| k)
-        .filter(|k| indegree.get(k) == Some(&1))
-        .collect()
+    true
 }
 
 impl<'a> PartialEq for Flow<'a> {
@@ -491,24 +660,18 @@ pub struct PreGraph<'a> {
 }
 
 impl<'a> PreGraph<'a> {
-    /// 移除指定流的所有路由边，并标记该流为破环状态
     pub fn breakloop(&mut self, flow: &Flow, route_id: &FxHashMap<(FlowID, RouteID), EdgeIndex>) {
-        // 标记流为破环状态
         flow.breakloop.set(true);
 
-        // 移除流的所有路由边
         for route in flow.routes.iter() {
-            // self.graph.remove_edge(route_id[&(flow.id, *route)]);
             if let Some(edge) = route_id.get(&(flow.id, *route)) {
                 self.graph.remove_edge(*edge);
             }
         }
 
-        // 移除孤立的节点
         self.remove_isolated_nodes();
     }
 
-    /// 移除所有没有连接的节点
     pub fn remove_isolated_nodes(&mut self) {
         self.graph.retain_nodes(|graph, node| {
             let in_degree = graph.neighbors_directed(node, petgraph::Incoming).count();
@@ -518,35 +681,52 @@ impl<'a> PreGraph<'a> {
     }
 }
 
-// 结合双指针和二分查找，时间复杂度为O(n * log m)
-fn conflict_with(slots: &[(u64, u64)], occupied: &[(u64, u64)]) -> bool {
+fn required_increase(slots: &[(u64, u64)], occupied: &[(u64, u64)]) -> u64 {
+    if slots.is_empty() || occupied.is_empty() {
+        return 0;
+    }
+
     let mut i = 0;
     let mut j = 0;
+    let mut max_inc: u64 = 0;
 
     while i < slots.len() && j < occupied.len() {
-        let (s1, e1) = unsafe { *slots.get_unchecked(i) };
-        let (s2, e2) = unsafe { *occupied.get_unchecked(j) };
+        let (s1, e1) = slots[i];
+        let (s2, e2) = occupied[j];
 
         if e1 <= s2 {
             i += 1;
         } else if e2 <= s1 {
-            if j + 1 >= occupied.len() {
-                return false;
+            let next_j = j + 1;
+            if next_j >= occupied.len() {
+                break;
             }
-            // 使用二分查找找到第一个 e2 > s1 的项
-            j += 1 + match occupied[j + 1..].binary_search_by_key(&s1, |&(_, e)| e) {
-                Ok(pos) => pos + 1,
-                Err(pos) => pos,
-            };
+
+            let search_slice = &occupied[next_j..];
+            j = next_j
+                + match search_slice.binary_search_by_key(&s1, |&(_, occ_e)| occ_e) {
+                    Ok(pos) => pos + 1,
+                    Err(pos) => pos,
+                };
         } else {
-            return true;
+            let inc = e2 - s1;
+
+            if inc > max_inc {
+                max_inc = inc;
+            }
+
+            if e1 < e2 {
+                i += 1;
+            } else {
+                j += 1;
+            }
         }
     }
-    false
+
+    max_inc
 }
 
 pub fn sort_hops(hops: &FxHashSet<LinkID>) -> (Vec<LinkID>, FxHashMap<LinkID, Vec<LinkID>>) {
-    // 构建图的邻接表和入度表
     let mut adjacency_list: UstrMap<Vec<Ustr>> = new!();
     let mut in_degree: UstrMap<usize> = new!();
     let mut predecessors: FxHashMap<LinkID, Vec<LinkID>> = new!();
@@ -557,7 +737,6 @@ pub fn sort_hops(hops: &FxHashSet<LinkID>) -> (Vec<LinkID>, FxHashMap<LinkID, Ve
         in_degree.entry(from).or_insert(0);
     }
 
-    // 找到所有入度为 0 的节点
     let mut queue: VecDeque<Ustr> = in_degree
         .iter()
         .filter(|(_, &degree)| degree == 0)
@@ -578,11 +757,9 @@ pub fn sort_hops(hops: &FxHashSet<LinkID>) -> (Vec<LinkID>, FxHashMap<LinkID, Ve
             }
         }
 
-        // 找到所有以 node 为起点的边，并加入结果列表
         sorted_hops.extend(hops.iter().filter(|(from, _)| *from == node));
     }
 
-    // 构建 predecessors 映射
     for (from, to) in hops {
         for (pred_from, pred_to) in hops {
             if pred_to == from {
@@ -624,13 +801,4 @@ fn lcm_all(it: impl Iterator<Item = u64>) -> u64 {
         acc = (acc * n) / gcd(acc, n);
     }
     acc
-}
-
-#[inline]
-fn _mod(a: u64, b: u64) -> u64 {
-    if a < b {
-        a
-    } else {
-        a % b
-    }
 }

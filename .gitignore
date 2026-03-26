@@ -1,9 +1,1 @@
 /target
-*.tar.*
-*.txt
-*.svg
-perf.*
-result*
-seq*
-*.py
-*.csv

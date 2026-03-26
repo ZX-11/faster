@@ -1,9 +1,8 @@
 use std::{fs::File, io::Write};
 
 use fxhash::FxHashMap;
-use regex::Regex;
 use serde::Serialize;
-use ustr::{Ustr, UstrMap};
+use ustr::Ustr;
 
 use crate::{
     input::inet::{Config, TIME_SCALE},
@@ -74,7 +73,6 @@ pub fn output(filename: &str) {
         switches: Vec::with_capacity(input.switches.len()),
     };
 
-    // 处理流信息
     for original_flow in &input.flows {
         let model_flow = &p.flows[&original_flow.name];
         
@@ -105,53 +103,28 @@ pub fn output(filename: &str) {
         });
     }
 
-    // flow_offset[flow_name][from][port] = offset
-    let mut flow_offset: UstrMap<UstrMap<FxHashMap<u32, u64>>> = UstrMap::default();
     let mut last_slot_end = 0;
 
-    for (id, flow) in &p.flows {
-        for ((from, _), offset) in flow.link_offsets() {
-            if p.devices[&from].end_device {
-                flow_offset
-                .entry(*id)
-                .or_default()
-                .entry(*from)
-                .or_default()
-                .insert(0, *offset);
-            }
-        }
-    }
-
-    // 处理交换机和端口信息
     for switch in &input.switches {
         let mut ports = Vec::with_capacity(switch.ports.len());
 
         for port in &switch.ports {
             let mut priority_slots_data = Vec::with_capacity(8);
 
-            // 初始化优先级时隙数据
             let mut priority_slots: FxHashMap<u32, Vec<(u64, u64)>> = FxHashMap::default();
 
             let link_id = (switch.name, port.connects_to);
 
-            // 遍历流并收集端口调度信息
             for flow in input.flows.iter().filter(|f| f.hop_set.contains(&link_id)) {
-                // 获取流的调度信息
                 let model_flow = &p.flows[&flow.name];
                 let offset = model_flow.offset_of(&link_id);
+                let link = model_flow.links[&link_id];
                 priority_slots
                     .entry(flow.priority_value)
                     .or_default()
-                    .push((offset, model_flow.tdelay(model_flow.links[&link_id])));
-                flow_offset
-                    .entry(flow.name)
-                    .or_default()
-                    .entry(switch.name)
-                    .or_default()
-                    .insert(eth_index(port.name.into()).unwrap(), offset);
+                    .push((offset, model_flow.tdelay(link)));
             }
 
-            // 转换优先级时隙数据
             for (&priority, slots) in &priority_slots {
                 priority_slots_data.push(PrioritySlotsData {
                     slots_data: merge_slots(slots.clone())
@@ -209,15 +182,6 @@ pub fn output(filename: &str) {
                 });
             }
 
-            // 添加默认优先级时隙
-            priority_slots_data.push(PrioritySlotsData {
-                slots_data: vec![SlotsData {
-                    slot_start: 0.0,
-                    slot_duration: cycle_duration as f64 / 1_000.0,
-                }],
-                priority: 2,
-            });
-
             priority_slots_data.push(PrioritySlotsData {
                 slots_data: free,
                 priority: 0,
@@ -238,12 +202,7 @@ pub fn output(filename: &str) {
         });
     }
 
-    let flow_period: UstrMap<u64> = p.flows.iter().map(|(name, flow)| (*name, flow.period)).collect();
-
     output_file(serde_json::to_string_pretty, &output, filename).unwrap();
-    output_file(serde_json::to_string_pretty, &flow_offset, "flow-offset.json").unwrap();
-    output_file(serde_json::to_string_pretty, &flow_period, "flow-period.json").unwrap();
-    println!("Cycle completion offset: {} ns", last_slot_end);
 }
 
 fn output_file<S, T, E>(
@@ -283,15 +242,6 @@ fn merge_slots(mut slots_data: Vec<(u64, u64)>) -> Vec<(u64, u64)> {
         }
     }
 
-    // 返回合并后的数组长度
     slots_data.truncate(w + 1);
     slots_data
-}
-
-fn eth_index(input: &str) -> Option<u32> {
-    Regex::new(r"eth\[(\d+)\]")
-        .unwrap()
-        .captures(input)
-        .and_then(|caps| caps.get(1))
-        .and_then(|m| m.as_str().parse().ok())
 }

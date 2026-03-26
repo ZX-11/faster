@@ -3,13 +3,11 @@ name = "faster"
 version = "0.1.0"
 edition = "2021"
 
-# 性能测试请启用如下编译选项 
-
-# [profile.release]
-# codegen-units = 1
-# lto = "fat"
-# panic = "abort"
-# strip = "symbols"
+[profile.release]
+codegen-units = 1
+lto = "fat"
+panic = "abort"
+strip = "symbols"
 
 [dependencies]
 petgraph = "0.6.5"
@@ -25,4 +23,3 @@ indexmap = "2.7"
 lazy_static = "1.5"
 radsort = "0.1"
 rand = "0.9.2"
-# mimalloc = { version = "0.1.48", features = ["v3"] }

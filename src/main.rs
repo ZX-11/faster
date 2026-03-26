@@ -162,8 +162,8 @@ fn schedule(fifo: bool) {
             for (f, _) in breakloop.iter() {
                 for link in f.links.values().filter(|l| !f.scheduled_link(l)) {
                     match match no_seq(sequence) {
-                        true => f.schedule_link(flows.values(), link, sequence, fifo),
-                        false => f.schedule_link(seq_flows.values(), link, sequence, fifo),
+                        true => f.schedule_link(link, fifo),
+                        false => f.schedule_link(link, fifo),
                     } {
                         Some(result) => start_offset = start_offset.max(result),
                         _ => break,
@@ -310,9 +310,9 @@ fn schedule_pre_graph(
                     .map(|(flow, _)| *flow)
                     .filter_map(|f| {
                         if no_seq(ctx.sequence) {
-                            f.schedule_link(flows.values(), link, ctx.sequence, fifo)
+                            f.schedule_link(link, fifo)
                         } else {
-                            f.schedule_link(ctx.seq_flows.values(), link, ctx.sequence, fifo)
+                            f.schedule_link(link, fifo)
                         }
                     })
                     .max()

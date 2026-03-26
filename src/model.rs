@@ -308,9 +308,7 @@ impl<'a> Flow<'a> {
 
     pub fn schedule_link(
         &self,
-        _flows: impl Iterator<Item = impl AsRef<Flow<'a>>>,
         link: &'a Link,
-        _sequence: u32,
         fifo: bool
     ) -> Option<u64> {
         let accdelay = self.accdelay(link);
